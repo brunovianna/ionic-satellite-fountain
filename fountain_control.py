@@ -8,11 +8,13 @@ pass detail data: time, azimuth, elevation
 
 
 from simpleOSC import *
-import time, sys, select
+import time, sys, select, threading
 
 global current_pass
 
 current_pass = -1
+
+semaphore = threading.BoundedSemaphore()
 
 class fountain_pass:
     def __init__(self, sat, start_time, end_time, tca_el, details):
@@ -79,18 +81,27 @@ def pass_handler(addr, tags, data, source):
         
         s = sat(data[0],0,0)
         sats.append(s)
-       
 
+    
     p = sat_pass(s, data[1],data[2], data[3], data[4], data[5], data[6], data[7])
     sat_passes.append(p)
     current_pass = p
 
-    
+def start_passes_handler(addr, tags, data, source):
+    #don't let the update passes access pass data while we're updating it
+    semaphore.acquire()
+    sat_passes = []
+
+def done_passes_handler(addr, tags, data, source):
+    #now it can acces
+    semaphore.release()
+
+
 def detail_handler(addr, tags, data, source):
     global current_pass
     d = pass_detail(data[0], data[1], data[2])
     if (current_pass == -1):
-        print "bug - pass detail before pass"
+        print "no pass? bug"
     else:
         current_pass.add_detail(d)
    
@@ -127,7 +138,9 @@ def print_schedule(fp):
         print "name: %s, start: %s, end: %s, elevation: %s" % (p.sat.name, time.ctime(p.start_time), time.ctime(p.end_time), p.tca_el)
 
 def update_fountain_schedule():
+    semaphore.acquire()
     sp = sorted(sat_passes, key=lambda sat_pass: sat_pass.tca_el, reverse=True)
+    semaphore.release()
     for p in sp:
         if fountain_passes == []:
             fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, p.details)
@@ -138,14 +151,13 @@ def update_fountain_schedule():
             #now check against all previous passes if there's anything else at the same time
             pass_ok = True
             for cp in fountain_passes:
-                if ((p.aos >= cp.start_time) and (p.aos <= cp.end_time)) or ((p.eos>=cp.start_time) and (p.eos<=cp.end_time)):
+                #plus 5 seconds before and after - this will be the time to resettle the nozzles
+                if ((p.aos >= cp.start_time-5) and (p.aos <= cp.end_time+5)) or ((p.eos>=cp.start_time-5) and (p.eos<=cp.end_time+5)):
                     pass_ok = False
                     break
             if pass_ok == True:
                 fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, p.details)
                 fountain_passes.append(fp)
-            else:
-                continue
              
     fountain_passes.sort(key=lambda fountain_pass: fountain_pass.start_time)
     print_schedule(fountain_passes)
@@ -154,9 +166,10 @@ def update_fountain_schedule():
 setOSCHandler("/gpredict/sats/all", sat_handler) # adding our function
 setOSCHandler("/gpredict/sats/next", sat_handler) # adding our function
 setOSCHandler("/gpredict/sats", sat_handler) # adding our function
-
 setOSCHandler("/gpredict/pass", pass_handler) # adding our function
 setOSCHandler("/gpredict/pass/detail", detail_handler) # adding our function
+setOSCHandler("/gpredict/pass/start", start_passes_handler) # adding our function
+setOSCHandler("/gpredict/pass/done", done_passes_handler) # adding our function
 
 
 # just checking which handlers we have added. not really needed
