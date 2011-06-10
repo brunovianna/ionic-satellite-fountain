@@ -3,6 +3,23 @@
 pass data: satname, aos time, aos azimuth, tca time, tca elevation, tca azimuth, eos time, eos azimuth
 pass detail data: time, azimuth, elevation
 
+using the isf ardruino control library
+// fountain control
+// outputs 2-7 control the servos
+// outputs 8-13 control the pump switches
+// pump 1 -- pin 2 (servo), pin 8 (switch) -- and son on
+
+// serial protocol
+// first char d (for digital), 2nd and 3rd chars the pin (ex 10), 4th char state (1 or 0)
+// or
+// first char s (for servo), 2nd and 3rd chars the pin (ex 03), 4th, 5th, 6th the angle (ex 070)
+//
+// end with newline (\n)
+
+// examples:
+// d131 - turn on pin 13
+// s03080 - turn servo on pin 10 to 80 degress
+
 
 """
 
@@ -10,11 +27,7 @@ pass detail data: time, azimuth, elevation
 from simpleOSC import *
 import time, sys, select, threading
 
-global current_pass
-
-current_pass = -1
-
-semaphore = threading.BoundedSemaphore()
+global index_pass, current_pass
 
 class fountain_pass:
     def __init__(self, sat, start_time, end_time, tca_el, details):
@@ -53,17 +66,27 @@ class pass_detail:
         self.el=el
 
 
+
+index_pass = -1
+current_pass = None
+next_pass = None
+
+semaphore = threading.BoundedSemaphore()
+
 initOSCServer('127.0.0.1', 7770)
 
 sats = []
 sat_passes = []
 fountain_passes = []
 
-
+#laboral is inclined 8deg to true north
+#first nozzle at 15deg from building alignment, ie 23deg
+#the others 30deg spaced
+nozzles_azimuth = [23, 53,83, 113, 143, 173] 
 
 # define a message-handler function for the server to call.
 def pass_handler(addr, tags, data, source):
-    global current_pass
+    global index_pass
     """
     print "received new osc msg from %s" % getUrlStr(source)
     print "with addr : %s" % addr
@@ -85,7 +108,7 @@ def pass_handler(addr, tags, data, source):
     
     p = sat_pass(s, data[1],data[2], data[3], data[4], data[5], data[6], data[7])
     sat_passes.append(p)
-    current_pass = p
+    index_pass = p
 
 def start_passes_handler(addr, tags, data, source):
     #don't let the update passes access pass data while we're updating it
@@ -93,17 +116,19 @@ def start_passes_handler(addr, tags, data, source):
     sat_passes = []
 
 def done_passes_handler(addr, tags, data, source):
-    #now it can acces
+    #now it can access
     semaphore.release()
-
-
+    #only in the first time --- on the others, let the main loop decide when to update
+    if next_pass == None:
+        update_fountain_schedule()
+    
 def detail_handler(addr, tags, data, source):
-    global current_pass
+    global index_pass
     d = pass_detail(data[0], data[1], data[2])
-    if (current_pass == -1):
+    if (index_pass == -1):
         print "no pass? bug"
     else:
-        current_pass.add_detail(d)
+        index_pass.add_detail(d)
    
 # define a message-handler function for the server to call.
 def sat_handler(addr, tags, data, source):
@@ -138,30 +163,78 @@ def print_schedule(fp):
         print "name: %s, start: %s, end: %s, elevation: %s" % (p.sat.name, time.ctime(p.start_time), time.ctime(p.end_time), p.tca_el)
 
 def update_fountain_schedule():
+    global next_pass
     semaphore.acquire()
     sp = sorted(sat_passes, key=lambda sat_pass: sat_pass.tca_el, reverse=True)
     semaphore.release()
     for p in sp:
-        if fountain_passes == []:
-            fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, p.details)
-            fountain_passes.append(fp)
-        else:
-            #fp is the last pass to be added to the schedule
-            
-            #now check against all previous passes if there's anything else at the same time
-            pass_ok = True
-            for cp in fountain_passes:
-                #plus 5 seconds before and after - this will be the time to resettle the nozzles
-                if ((p.aos >= cp.start_time-5) and (p.aos <= cp.end_time+5)) or ((p.eos>=cp.start_time-5) and (p.eos<=cp.end_time+5)):
-                    pass_ok = False
-                    break
-            if pass_ok == True:
+        #laboral only:
+        #discard passes that begin AND end on the west side of the sky
+        if (p.aos_az < 180) or (p.eos_az < 180):            
+            if fountain_passes == []:
                 fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, p.details)
                 fountain_passes.append(fp)
+            else:
+                #fp is the last pass to be added to the schedule
+                
+                #now check against all previous passes if there's anything else at the same time
+                pass_ok = True
+                for cp in fountain_passes:
+                    #plus 5 seconds before and after - this will be the time to resettle the nozzles
+                    if ((p.aos >= cp.start_time-5) and (p.aos <= cp.end_time+5)) or ((p.eos>=cp.start_time-5) and (p.eos<=cp.end_time+5)):
+                        pass_ok = False
+                        break
+                if pass_ok == True:
+                    
+                    #laboral only:
+                    #we don't want the event details that happen in the west part of the sky
+                    new_details = []
+                    for nd in p.details:
+                        if nd.az < 180:
+                            new_details.append(nd)
+                    
+                    fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, new_details)
+                    fountain_passes.append(fp)
              
     fountain_passes.sort(key=lambda fountain_pass: fountain_pass.start_time)
-    print_schedule(fountain_passes)
+    
+    for fp in fountain_passes:
+        #print "my time %s, start %s" % (time.ctime(my_get_time()), time.ctime(fp.start_time))
+        if my_get_time() < fp.start_time - 5:
+            next_pass = fp
+            break
 
+   
+
+def find_best_nozzle (az):
+    global nozzles_azimuth
+    min_diff = 1000
+    best = -1
+    for n in nozzles_azimuth:
+        if abs(az - n) < min_diff:
+            min_diff = abs(az-n)
+            best = nozzles_azimuth.index(n)
+    return (best)
+
+def find_servo_angle(a):
+    #not ready yeat
+    return a
+
+def my_get_time():
+    #for debug purposes
+    return int(time.mktime(time.localtime()))
+
+def nozzle_solo(n):
+    nnn = []
+    for i in range(len(nozzles_azimuth)):
+        if (i==n):
+            nnn.append(1)
+        else:
+            nnn.append(0)
+    print "nozzles state %s" % nnn,
+
+def move_nozzle(n,a):
+    print "angle %s" % ( a)
 
 setOSCHandler("/gpredict/sats/all", sat_handler) # adding our function
 setOSCHandler("/gpredict/sats/next", sat_handler) # adding our function
@@ -180,9 +253,46 @@ reportOSCHandlers()
 try :
     while 1 :
         time.sleep(1)
+        
+        #check if we got info from gpredict yet
+        if (next_pass != None):
+            print "n %s s: %s, e %s" % (my_get_time(), (next_pass.start_time), (next_pass.end_time)),
+            if (my_get_time() >= next_pass.start_time - 5) and (my_get_time() < next_pass.start_time):
+                #next pass will be within 5 secs
+                #print "soon - next start: %s, next end %s" % (time.ctime(next_pass.start_time), time.ctime(next_pass.end_time))
+                print " soon "
+            elif (my_get_time() >= next_pass.start_time) and (my_get_time() < next_pass.end_time):
+                #next pass is NOW!
+                next_pass.details.reverse()
+                last_time = 0
+                for d in next_pass.details:
+                    if last_time == 0:
+                        last_time = d.time
+                    else:
+                        if (my_get_time() >= d.time) and (my_get_time() < last_time):
+                            break
+                
+                next_pass.details.reverse()
+            
+                print "now: az: %s el: %s" % (time.ctime(my_get_time()), d.az, d.el),
+                
+                n = find_best_nozzle(d.az)
+                a = find_servo_angle(d.el)
+                
+                nozzle_solo(n)
+                move_nozzle(n,a)
+                print ""
+
+            else:
+                #no activity - go ahead and update the schedule
+                print "else"
+                update_fountain_schedule()
+
+        #to check, press enter at the terminal
         if heard_enter():
             #print_passes(sat_passes)
-            update_fountain_schedule()
+            #update_fountain_schedule()
+            print_schedule(fountain_passes)
 
 except KeyboardInterrupt :
     print "\nClosing OSCServer."
