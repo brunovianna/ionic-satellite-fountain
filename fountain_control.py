@@ -14,20 +14,18 @@ using the isf ardruino control library
 // or
 // first char s (for servo), 2nd and 3rd chars the pin (ex 03), 4th, 5th, 6th the angle (ex 070)
 //
-// end with newline (\n)
-
 // examples:
-// d131 - turn on pin 13
-// s03080 - turn servo on pin 10 to 80 degress
+// d051 - turn on nozzle 5 (on pin 13)
+// s03080 - turn servo 3 (on pin 10) to 80 degress
 
 
 """
 
 
 from simpleOSC import *
-import time, sys, select, threading
+import time, sys, select, threading, serial
 
-global index_pass, current_pass
+global index_pass, current_pass,IS_JUST_A_TEST
 
 class fountain_pass:
     def __init__(self, sat, start_time, end_time, tca_el, details):
@@ -67,6 +65,8 @@ class pass_detail:
 
 
 
+IS_JUST_A_TEST = True
+
 index_pass = -1
 current_pass = None
 next_pass = None
@@ -74,6 +74,8 @@ next_pass = None
 semaphore = threading.BoundedSemaphore()
 
 initOSCServer('127.0.0.1', 7770)
+
+sp = serial.Serial("/dev/ttyUSB0", 57600, timeout=0.02)
 
 sats = []
 sat_passes = []
@@ -162,6 +164,14 @@ def print_schedule(fp):
     for p in fp:
         print "name: %s, start: %s, end: %s, elevation: %s" % (p.sat.name, time.ctime(p.start_time), time.ctime(p.end_time), p.tca_el)
 
+def print_next_pass():
+    if next_pass == None:
+        print "no data yet"
+    else:
+        print next_pass.sat.name
+        for d in next_pass.details:
+            print " %s, az: %s, el: %s" % (get_str_time(d.time), d.az, d.el)
+
 def update_fountain_schedule():
     global next_pass
     semaphore.acquire()
@@ -186,11 +196,12 @@ def update_fountain_schedule():
                         break
                 if pass_ok == True:
                     
-                    #laboral only:
-                    #we don't want the event details that happen in the west part of the sky
                     new_details = []
                     for nd in p.details:
-                        if nd.az < 180:
+                        #laboral only:
+                        #we don't want the event details that happen in the west part of the sky (> 180 deg azimuth)
+                        #we don't want event details too close to the horizon (10 deg elevation minimun)
+                        if (nd.az < 180) and (nd.el >= 10):
                             new_details.append(nd)
                     
                     fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, new_details)
@@ -224,6 +235,26 @@ def my_get_time():
     #for debug purposes
     return int(time.mktime(time.localtime()))
 
+def get_str_time(t=my_get_time()):
+    return time.strftime("%H:%M:%S", time.localtime(t))
+
+def add_zeros_100 (a):
+    if a < 10:
+        add_zeros = "00"
+    elif a< 100:
+        add_zeros = "0"
+    else:
+        add_zeros = ""
+    return str(add_zeros)+str(a)
+
+def add_zeros_10 (a):
+    if a < 10:
+        add_zeros = "0"
+    else:
+        add_zeros = ""
+    return str(add_zeros)+str(a)
+
+
 def nozzle_solo(n):
     nnn = []
     for i in range(len(nozzles_azimuth)):
@@ -231,10 +262,19 @@ def nozzle_solo(n):
             nnn.append(1)
         else:
             nnn.append(0)
-    print "nozzles state %s" % nnn,
+    if IS_JUST_A_TEST:
+        print "nozzles state %s command %s" % nnn,
+    else:
+        for i in range(len(nnn)):
+            str = "d"+add_zeros_10(i)+nnn[i]+"\n"
+            sp.write(str)
 
 def move_nozzle(n,a):
-    print "angle %s" % ( a)
+    str = "s"+add_zeros_10(n)+add_zeros_100(a)+"\n"
+    if IS_JUST_A_TEST:
+        print "angle %s command %s" % ( a)
+    else:
+        sp.write(str)
 
 setOSCHandler("/gpredict/sats/all", sat_handler) # adding our function
 setOSCHandler("/gpredict/sats/next", sat_handler) # adding our function
@@ -256,25 +296,23 @@ try :
         
         #check if we got info from gpredict yet
         if (next_pass != None):
-            print "n %s s: %s, e %s" % (my_get_time(), (next_pass.start_time), (next_pass.end_time)),
+            print "n %s s: %s, e %s" % (get_str_time(my_get_time()), get_str_time(next_pass.start_time), get_str_time(next_pass.end_time)),
             if (my_get_time() >= next_pass.start_time - 5) and (my_get_time() < next_pass.start_time):
                 #next pass will be within 5 secs
                 #print "soon - next start: %s, next end %s" % (time.ctime(next_pass.start_time), time.ctime(next_pass.end_time))
                 print " soon "
             elif (my_get_time() >= next_pass.start_time) and (my_get_time() < next_pass.end_time):
                 #next pass is NOW!
-                next_pass.details.reverse()
-                last_time = 0
-                for d in next_pass.details:
-                    if last_time == 0:
-                        last_time = d.time
-                    else:
-                        if (my_get_time() >= d.time) and (my_get_time() < last_time):
-                            break
+                last_time = next_pass.end_time
                 
-                next_pass.details.reverse()
-            
-                print "now: az: %s el: %s" % (time.ctime(my_get_time()), d.az, d.el),
+                details_now = None
+                for d in next_pass.details:
+                    if (my_get_time() >= d.time):
+                        details_now = d
+                    else:
+                        break
+                
+                print "now: az: %s el: %s" % ( d.az, d.el),
                 
                 n = find_best_nozzle(d.az)
                 a = find_servo_angle(d.el)
@@ -293,6 +331,7 @@ try :
             #print_passes(sat_passes)
             #update_fountain_schedule()
             print_schedule(fountain_passes)
+            print_next_pass()
 
 except KeyboardInterrupt :
     print "\nClosing OSCServer."
