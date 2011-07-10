@@ -15,8 +15,25 @@ using the isf ardruino control library
 // first char s (for servo), 2nd and 3rd chars the pin (ex 03), 4th, 5th, 6th the angle (ex 070)
 //
 // examples:
-// d051 - turn on nozzle 5 (on pin 13)
-// s03080 - turn servo 3 (on pin 10) to 80 degress
+// d051 - turn on nozzle 5 
+// s03080 - turn servo 3  to 80 degress
+
+// pin mapping
+
+arduino 2 - servo 2 (1)
+arduino 3 - servo 1 (0)
+arduino 4 - servo 4 (3)
+arduino 5 - servo 3 (2)
+arduino 6 - servo 6 (5)
+arduino 7 - servo 5 (4)
+arduino 8 - bomba 2
+arduino 9 - bomba 1
+arduino 10 - bomba 4
+arduino 11 - bomba 3
+arduino 12 - bomba 6
+arduino 13 - bomba 5
+
+
 
 
 """
@@ -62,29 +79,10 @@ class pass_detail:
         self.time = time
         self.az=az
         self.el=el
+        self.range_rate=range_rate
 
 
 
-IS_JUST_A_TEST = True
-
-index_pass = -1
-current_pass = None
-next_pass = None
-
-semaphore = threading.BoundedSemaphore()
-
-initOSCServer('127.0.0.1', 7770)
-
-sp = serial.Serial("/dev/ttyUSB0", 57600, timeout=0.02)
-
-sats = []
-sat_passes = []
-fountain_passes = []
-
-#laboral is inclined 8deg to true north
-#first nozzle at 15deg from building alignment, ie 23deg
-#the others 30deg spaced
-nozzles_azimuth = [23, 53,83, 113, 143, 173] 
 
 # define a message-handler function for the server to call.
 def pass_handler(addr, tags, data, source):
@@ -126,7 +124,7 @@ def done_passes_handler(addr, tags, data, source):
     
 def detail_handler(addr, tags, data, source):
     global index_pass
-    d = pass_detail(data[0], data[1], data[2])
+    d = pass_detail(data[0], data[1], data[2], data[3])
     if (index_pass == -1):
         print "no pass? bug"
     else:
@@ -267,14 +265,117 @@ def nozzle_solo(n):
     else:
         for i in range(len(nnn)):
             str = "d"+add_zeros_10(i)+nnn[i]+"\n"
-            sp.write(str)
+            arduino.write(str)
 
 def move_nozzle(n,a):
     str = "s"+add_zeros_10(n)+add_zeros_100(a)+"\n"
     if IS_JUST_A_TEST:
         print "angle %s command %s" % ( a)
     else:
-        sp.write(str)
+        arduino.write(str)
+	pins[n] = a
+
+def go_slow(pin, angle, delta, interval):
+  if pins[pin] > angle:
+    while (pins[pin]-delta > angle):
+      pins[pin]=(pins[pin]-delta)
+      str = "s"+add_zeros_10(pin)+add_zeros_100(pins[pin]-delta)+"\n"
+      arduino.write(str)
+      time.sleep(interval)
+  else:
+      while (pins[pin]+delta < angle):
+        pins[pin]=(pins[pin]+delta)
+        str = "s"+add_zeros_10(pin)+add_zeros_100(pins[pin]+delta)+"\n"
+        arduino.write(str)
+        time.sleep(interval)
+     
+
+def open_serials():
+	global arduino, oled
+
+	s1 = None
+	s2 = None
+
+	
+	try:
+		s1 = serial.Serial ("/dev/ttyUSB0", 57600, timeout=1)
+	
+	except:
+		print "serial port /dev/ttyUSB0 not found"
+		sys.exit()
+
+	
+	try:
+		s2 = serial.Serial ("/dev/ttyUSB1", 57600, timeout=1)
+	
+	except:
+		print "serial port /dev/ttyUSB1 not found"
+		sys.exit()
+
+	s1.open()
+	s1.write("U")	
+	ack = s1.read(1)
+	if ack == "A":
+		arduino = s1
+		oled = s2
+		oled.write("U")
+		ack = oled.read(1)
+		if ord(ack) != 6:
+			print "oled not connected", ack
+			sys.exit()
+		arduino.timeout = None
+		oled.timeout = None
+
+	elif ord(ack) == 6:
+		arduino = s2
+		oled = s1
+		arduino.write("U")
+		ack = arduino.read(1)
+		if ack != "A":
+			print "arduino not connected", ord(ack)
+			sys.exit()
+		arduino.timeout = None
+		oled.timeout = None
+
+	else:
+		print "something is wrong :-O ", ord(ack)
+		sys.exit()
+
+IS_JUST_A_TEST = True
+
+
+arduino = oled = None
+
+
+
+
+if IS_JUST_A_TEST is False: 	
+	open_serials()	
+
+
+index_pass = -1
+current_pass = None
+next_pass = None
+
+semaphore = threading.BoundedSemaphore()
+
+initOSCServer('127.0.0.1', 7770)
+
+
+sats = []
+sat_passes = []
+fountain_passes = []
+
+#laboral is inclined 8deg to true north
+#first nozzle at 15deg from building alignment, ie 23deg
+#the others 30deg spaced
+nozzles_azimuth = [23, 53,83, 113, 143, 173] 
+
+
+
+
+
+pins = [0,0,0,0,0,0]
 
 setOSCHandler("/gpredict/sats/all", sat_handler) # adding our function
 setOSCHandler("/gpredict/sats/next", sat_handler) # adding our function
