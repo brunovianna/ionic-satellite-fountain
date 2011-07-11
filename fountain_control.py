@@ -40,7 +40,7 @@ arduino 13 - bomba 5
 
 
 from simpleOSC import *
-import time, sys, select, threading, serial
+import time, sys, select, threading, serial, OSC
 
 global index_pass, current_pass,IS_JUST_A_TEST
 
@@ -75,7 +75,7 @@ class sat_pass:
 		self.details.append(d)
 
 class pass_detail:
-    def __init__(self, time, az, el):
+    def __init__(self, time, az, el, range_rate):
         self.time = time
         self.az=az
         self.el=el
@@ -124,14 +124,14 @@ def done_passes_handler(addr, tags, data, source):
     
 def detail_handler(addr, tags, data, source):
     global index_pass
-    d = pass_detail(data[0], data[1], data[2], data[3])
+    d = pass_detail(data[0], data[1], data[2], data[3] / 100)
     if (index_pass == -1):
         print "no pass? bug"
     else:
         index_pass.add_detail(d)
    
 # define a message-handler function for the server to call.
-def sat_handler(addr, tags, data, source):
+def nothing_handler(addr, tags, data, source):
     if (1==0):
         print "-"
 
@@ -233,8 +233,10 @@ def my_get_time():
     #for debug purposes
     return int(time.mktime(time.localtime()))
 
-def get_str_time(t=my_get_time()):
+def get_str_time(t=my_get_time()): 
     return time.strftime("%H:%M:%S", time.localtime(t))
+
+#string
 
 def add_zeros_100 (a):
     if a < 10:
@@ -252,6 +254,7 @@ def add_zeros_10 (a):
         add_zeros = ""
     return str(add_zeros)+str(a)
 
+#nozzle controls
 
 def nozzle_solo(n):
     nnn = []
@@ -288,7 +291,160 @@ def go_slow(pin, angle, delta, interval):
         str = "s"+add_zeros_10(pin)+add_zeros_100(pins[pin]+delta)+"\n"
         arduino.write(str)
         time.sleep(interval)
-     
+
+#oled draw
+
+def dec2hex(n):
+	"""return the hexadecimal string representation of integer n"""
+	return "%X" % n
+ 
+def hex2dec(s):
+	"""return the integer value of a hexadecimal string s"""
+	return int(s, 16)
+ 
+def send_sgc_commands(commands):
+	global arduino, oled
+	if type(commands)==type(str()):
+		for command in commands.split(","):
+			command = hex2dec(command)
+			if command < 0:
+				command = 0
+			if command > 255:
+				command = 255			
+			oled.write(chr(command))
+	elif type(commands)==type(list()):
+		for command in commands:
+			if type(command)==type(str()):
+				command = hex2dec(command)
+			if command < 0:
+				command = 0
+			if command > 255:
+				command = 255			
+			oled.write(chr(command))
+
+def sgc_print(x,y,font,color_1,color_2, w, h, text):
+	global arduino, oled
+	print "text= ", text
+	oled.write("S")
+	oled.write(chr(x))
+	oled.write(chr(y))
+	oled.write(chr(font))
+	oled.write(chr(color_1))
+	oled.write(chr(color_2))
+	oled.write(chr(w))
+	oled.write(chr(h))
+	for c in text:
+		oled.write(c)
+	oled.write(chr(0))
+
+
+def draw_sat(x,y):
+	#print x,y
+	send_sgc_commands(["72",x,y,x+40,y+20,0,31]) #rectangle
+	print "ds rec 1"
+	ack_or_reset()
+	send_sgc_commands(["4C",x+40,y+10,x+44,y+10,0,31]) #line
+	print "ds line 1"
+	ack_or_reset()
+	send_sgc_commands(["43",x+60,y+10,15,0,31]) #circle
+	print "ds circle"
+	ack_or_reset()
+	send_sgc_commands(["4C",x+75,y+10,x+80,y+10,0,31]) #line
+	print "ds line 2"
+	ack_or_reset()
+	send_sgc_commands(["72",x+80,y,x+120,y+20,0,31]) #rectangle
+	print "ds rec 2"
+	ack_or_reset()
+	
+def reset_or_die():
+	time.sleep(0.5)
+	print "trying to reset..."
+	oled.write("U")
+	ack=oled.read(1)
+	if len(ack)==0:
+		ack ="!"
+
+	tries = 0
+	while ord(ack)!=6:
+		time.sleep(0.5)
+		print "trying to reset..."
+		oled.write("U")
+		ack=oled.read(1)
+		if len(ack)==0:
+			ack ="!"
+		tries = tries + 1
+
+
+	oled.write("E")
+	ack=oled.read(1)
+
+
+def ack_or_reset():
+	global arduino, oled
+
+	ack=oled.read(1)
+	if (len(ack))==0:
+		print "time out exit"
+		oled.write("U")
+		ack=oled.read(1)
+		#sys.exit()
+		#reset_or_die()
+	elif ord(ack) != 6:
+		print "bad ack exit"
+		#sys.exit()		
+		#reset_or_die()
+		
+
+def update_oled (satname, timetext):
+
+	global oled_sat_pos, now_blink
+	global arduino, oled
+
+	oled.write("E") #clear screen
+	ack_or_reset()
+
+	satname = satname[0:10] #clip if too long
+
+	send_sgc_commands(["70",01]) #no fill
+	print "no fill"
+	ack_or_reset()
+	send_sgc_commands(["72",00,00,159,12,255,255]) #rectangle
+	print "rect title"
+	ack_or_reset()
+	send_sgc_commands(["70",0]) # fill
+	ack_or_reset()
+	
+	oled_sat_pos = oled_sat_pos + 4
+	if (oled_sat_pos == 160):
+		oled_sat_pos = 0
+
+	draw_sat(oled_sat_pos,26)
+	send_sgc_commands(["70",01]) #no fill
+	print "no fill"
+	ack_or_reset()
+	sgc_print(7,2,0,248,0,1,1,"ionic satellite fountain")
+	print "title"
+	ack_or_reset()
+	sgc_print(0,68,2,255,255,1,1,"next pass:")
+	print "next pass"
+	ack_or_reset()
+	sgc_print(0,83,2,255,255,2,2,satname)
+	print "sat name"
+	ack_or_reset()
+	if timetext == "now!":
+		if now_blink == True:
+			sgc_print(0,110,0,255,255,2,2,timetext)
+			now_blink = False
+		else:
+			now_blink == True
+	else:
+		sgc_print(0,110,0,255,255,2,2,timetext)
+	
+	print "time"
+	#sgc_print(20,110,0,227,156,2,2,"in 2:10:10")
+	ack_or_reset()
+
+#serial ports
 
 def open_serials():
 	global arduino, oled
@@ -298,7 +454,7 @@ def open_serials():
 
 	
 	try:
-		s1 = serial.Serial ("/dev/ttyUSB0", 57600, timeout=1)
+		s1 = serial.Serial ("/dev/ttyUSB0",9600, timeout=1)
 	
 	except:
 		print "serial port /dev/ttyUSB0 not found"
@@ -306,7 +462,7 @@ def open_serials():
 
 	
 	try:
-		s2 = serial.Serial ("/dev/ttyUSB1", 57600, timeout=1)
+		s2 = serial.Serial ("/dev/ttyUSB1", 9600, timeout=1)
 	
 	except:
 		print "serial port /dev/ttyUSB1 not found"
@@ -315,37 +471,58 @@ def open_serials():
 	s1.open()
 	s1.write("U")	
 	ack = s1.read(1)
-	if ack == "A":
-		arduino = s1
-		oled = s2
-		oled.write("U")
-		ack = oled.read(1)
-		if ord(ack) != 6:
-			print "oled not connected", ack
-			sys.exit()
-		arduino.timeout = None
-		oled.timeout = None
+	if len(ack) > 0:
+		if ack == "A":
+			arduino = s1
+			oled = s2
+			oled.write("U")
+			ack = oled.read(1)
+			if len(ack) == 0:
+				print "oled problem - timeout", ack
+				sys.exit()
+			if ord(ack) != 6:
+				print "oled problem - bad ack", ack
+				sys.exit()
+			oled.timeout = None
+			oled.write("U") #set baud rate
+			ack_or_reset()
+			oled.write("E") #clear screen
+			ack_or_reset()
+			arduino.timeout = 0.1
+			print "arduino on USB0"
+			print "oled on USB1"
 
-	elif ord(ack) == 6:
-		arduino = s2
-		oled = s1
-		arduino.write("U")
-		ack = arduino.read(1)
-		if ack != "A":
-			print "arduino not connected", ord(ack)
-			sys.exit()
-		arduino.timeout = None
-		oled.timeout = None
+		elif ord(ack) == 6:
+			arduino = s2
+			oled = s1
+			arduino.timeout = 0.1
+			arduino.write("U")
+			ack = arduino.read(1)
+			if ack != "A":
+				print "arduino not connected"
+				sys.exit()
+			oled.timeout = 5
+			oled.write("U") #set baud rate
+			ack_or_reset()
+			oled.write("E") #clear screen
+			ack_or_reset()
+			print "arduino on USB1"
+			print "oled on USB0"
+		else:
+			print "?"
 
 	else:
-		print "something is wrong :-O ", ord(ack)
+		print "something is wrong :-O "
+		print "try again in a few seconds "
+		print "if still not working reconnect the cables"
 		sys.exit()
 
-IS_JUST_A_TEST = True
+IS_JUST_A_TEST = False
 
 
 arduino = oled = None
 
+oled_sat_pos = 0
 
 
 
@@ -353,13 +530,13 @@ if IS_JUST_A_TEST is False:
 	open_serials()	
 
 
-index_pass = -1
+index_pass = -1  
 current_pass = None
 next_pass = None
 
 semaphore = threading.BoundedSemaphore()
 
-initOSCServer('127.0.0.1', 7770)
+initOSCServer('127.0.0.1', 7771)
 
 
 sats = []
@@ -377,9 +554,11 @@ nozzles_azimuth = [23, 53,83, 113, 143, 173]
 
 pins = [0,0,0,0,0,0]
 
-setOSCHandler("/gpredict/sats/all", sat_handler) # adding our function
-setOSCHandler("/gpredict/sats/next", sat_handler) # adding our function
-setOSCHandler("/gpredict/sats", sat_handler) # adding our function
+setOSCHandler("/gpredict/sats/all", nothing_handler) # adding our function
+setOSCHandler("/gpredict/sat/", nothing_handler) # adding our function
+setOSCHandler("/gpredict/sat/next", nothing_handler) # adding our function
+setOSCHandler("/gpredict/sats/next", nothing_handler) # adding our function
+setOSCHandler("/gpredict/sats", nothing_handler) # adding our function
 setOSCHandler("/gpredict/pass", pass_handler) # adding our function
 setOSCHandler("/gpredict/pass/detail", detail_handler) # adding our function
 setOSCHandler("/gpredict/pass/start", start_passes_handler) # adding our function
@@ -396,7 +575,7 @@ try :
         time.sleep(1)
         
         #check if we got info from gpredict yet
-        if (next_pass != None):
+        if (next_pass != None) and (oled != None) and (arduino != None):
             print "n %s s: %s, e %s" % (get_str_time(my_get_time()), get_str_time(next_pass.start_time), get_str_time(next_pass.end_time)),
             if (my_get_time() >= next_pass.start_time - 5) and (my_get_time() < next_pass.start_time):
                 #next pass will be within 5 secs
@@ -420,12 +599,14 @@ try :
                 
                 nozzle_solo(n)
                 move_nozzle(n,a)
+		update_oled (next_pass.sat.name, "now!")
                 print ""
 
             else:
                 #no activity - go ahead and update the schedule
                 print "else"
                 update_fountain_schedule()
+		update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()))
 
         #to check, press enter at the terminal
         if heard_enter():
