@@ -42,7 +42,221 @@ arduino 13 - bomba 5
 from simpleOSC import *
 import time, sys, select, threading, serial, OSC
 
+from gnuradio import audio
+from gnuradio import eng_notation
+from gnuradio import gr
+from gnuradio import blks2
+from gnuradio.eng_option import eng_option
+from gnuradio.gr import firdes
+
+import fcd
+
+
 global index_pass, current_pass,IS_JUST_A_TEST
+
+
+# fm receiver, created using gnuradio-companion
+class fm_rx(gr.top_block):
+
+	def __init__(self):
+		gr.top_block.__init__(self, "FM Receiver")
+
+		##################################################
+		# Variables
+		##################################################
+		self.samp_rate = samp_rate = 96000
+		self.xlate_filter_taps = xlate_filter_taps = firdes.low_pass(1, samp_rate, 48000, 5000, firdes.WIN_HAMMING, 6.76)
+		self.sql_lev = sql_lev = -100
+		self.rf_gain = rf_gain = 20
+		self.freq = freq = 144800000
+		self.af_gain = af_gain = 2
+
+		##################################################
+		# Blocks
+		##################################################
+		self.xlating_fir_filter = gr.freq_xlating_fir_filter_ccc(1, (xlate_filter_taps), 0, samp_rate)
+		self.nbfm_normal = blks2.nbfm_rx(
+			audio_rate=48000,
+			quad_rate=96000,
+			tau=75e-6,
+			max_dev=5e3,
+		)
+		self.low_pass_filter = gr.fir_filter_ccf(1, firdes.low_pass(
+			1, samp_rate, 12500, 1500, firdes.WIN_HAMMING, 6.76))
+		self.gr_simple_squelch_cc_0 = gr.simple_squelch_cc(sql_lev, 1)
+		self.gr_multiply_const_vxx_1 = gr.multiply_const_vff((af_gain, ))
+		self.fcd_source_c_1 = fcd.source_c("hw:1")
+		self.fcd_source_c_1.set_freq(freq)
+		self.fcd_source_c_1.set_freq_corr(-32)
+		    
+		self.audio_sink = audio.sink(48000, "", True)
+
+		##################################################
+		# Connections
+		##################################################
+		self.connect((self.xlating_fir_filter, 0), (self.low_pass_filter, 0))
+		self.connect((self.low_pass_filter, 0), (self.gr_simple_squelch_cc_0, 0))
+		self.connect((self.gr_multiply_const_vxx_1, 0), (self.audio_sink, 1))
+		self.connect((self.gr_multiply_const_vxx_1, 0), (self.audio_sink, 0))
+		self.connect((self.gr_simple_squelch_cc_0, 0), (self.nbfm_normal, 0))
+		self.connect((self.nbfm_normal, 0), (self.gr_multiply_const_vxx_1, 0))
+		self.connect((self.fcd_source_c_1, 0), (self.xlating_fir_filter, 0))
+
+	def get_samp_rate(self):
+		return self.samp_rate
+
+	def set_samp_rate(self, samp_rate):
+		self.samp_rate = samp_rate
+		self.set_xlate_filter_taps(firdes.low_pass(1, self.samp_rate, 48000, 5000, firdes.WIN_HAMMING, 6.76))
+		self.low_pass_filter.set_taps(firdes.low_pass(1, self.samp_rate, 12500, 1500, firdes.WIN_HAMMING, 6.76))
+
+	def get_xlate_filter_taps(self):
+		return self.xlate_filter_taps
+
+	def set_xlate_filter_taps(self, xlate_filter_taps):
+		self.xlate_filter_taps = xlate_filter_taps
+		self.xlating_fir_filter.set_taps((self.xlate_filter_taps))
+
+	def get_sql_lev(self):
+		return self.sql_lev
+
+	def set_sql_lev(self, sql_lev):
+		self.sql_lev = sql_lev
+		self.gr_simple_squelch_cc_0.set_threshold(self.sql_lev)
+
+	def get_rf_gain(self):
+		return self.rf_gain
+
+	def set_rf_gain(self, rf_gain):
+		self.rf_gain = rf_gain
+		self.fcd_source_c_1.set_lna_gain(self.rf_gain)
+
+	def get_freq(self):
+		return self.freq
+
+	def set_freq(self, freq):
+		self.freq = freq
+		self.fcd_source_c_1.set_freq(self.freq)
+
+	def get_af_gain(self):
+		return self.af_gain
+
+	def set_af_gain(self, af_gain):
+		self.af_gain = af_gain
+		self.gr_multiply_const_vxx_1.set_k((self.af_gain, ))
+
+# cw / ssb receiver (just change bandpass filter values), created using gnuradio-companion
+class cw_rx(gr.top_block):
+
+	def __init__(self):
+		gr.top_block.__init__(self, "CW/SSB Receiver")
+
+		##################################################
+		# Variables
+		##################################################
+		self.samp_rate = samp_rate = 96000
+		self.xlate_filter_taps = xlate_filter_taps = firdes.low_pass(1, samp_rate, 48000, 5000, firdes.WIN_HAMMING, 6.76)
+		self.sql_lev = sql_lev = -100
+		self.rf_gain = rf_gain = 20
+		self.pass_trans = pass_trans = 600
+		self.pass_low = pass_low = 300
+		self.pass_high = pass_high = 1200
+		self.freq = freq = 144800000
+		self.af_gain = af_gain = 5
+
+		##################################################
+		# Blocks
+		##################################################
+		self.xlating_fir_filter = gr.freq_xlating_fir_filter_ccc(1, (xlate_filter_taps), 0, samp_rate)
+		self.gr_simple_squelch_cc_0 = gr.simple_squelch_cc(sql_lev, 1)
+		self.gr_multiply_const_vxx_0 = gr.multiply_const_vff((af_gain, ))
+		self.gr_complex_to_real_0 = gr.complex_to_real(1)
+		self.gr_agc2_xx_0 = gr.agc2_cc(1e-1, 20.8e-6, 0.3, 1.0, 0.0)
+		self.fcd_source_c_1 = fcd.source_c("hw:1")
+		self.fcd_source_c_1.set_freq(freq)
+		self.fcd_source_c_1.set_freq_corr(-10)
+		    
+		self.band_pass_filter_0 = gr.fir_filter_ccf(2, firdes.band_pass(
+			1, samp_rate, pass_low, pass_high, pass_trans, firdes.WIN_HAMMING, 6.76))
+		self.audio_sink = audio.sink(48000, "", True)
+
+		##################################################
+		# Connections
+		##################################################
+		self.connect((self.fcd_source_c_1, 0), (self.xlating_fir_filter, 0))
+		self.connect((self.xlating_fir_filter, 0), (self.gr_simple_squelch_cc_0, 0))
+		self.connect((self.band_pass_filter_0, 0), (self.gr_agc2_xx_0, 0))
+		self.connect((self.gr_complex_to_real_0, 0), (self.gr_multiply_const_vxx_0, 0))
+		self.connect((self.gr_agc2_xx_0, 0), (self.gr_complex_to_real_0, 0))
+		self.connect((self.gr_simple_squelch_cc_0, 0), (self.band_pass_filter_0, 0))
+		self.connect((self.gr_multiply_const_vxx_0, 0), (self.audio_sink, 0))
+		self.connect((self.gr_multiply_const_vxx_0, 0), (self.audio_sink, 1))
+
+	def get_samp_rate(self):
+		return self.samp_rate
+
+	def set_samp_rate(self, samp_rate):
+		self.samp_rate = samp_rate
+		self.set_xlate_filter_taps(firdes.low_pass(1, self.samp_rate, 48000, 5000, firdes.WIN_HAMMING, 6.76))
+		self.band_pass_filter_0.set_taps(firdes.band_pass(1, self.samp_rate, self.pass_low, self.pass_high, self.pass_trans, firdes.WIN_HAMMING, 6.76))
+
+	def get_xlate_filter_taps(self):
+		return self.xlate_filter_taps
+
+	def set_xlate_filter_taps(self, xlate_filter_taps):
+		self.xlate_filter_taps = xlate_filter_taps
+		self.xlating_fir_filter.set_taps((self.xlate_filter_taps))
+
+	def get_sql_lev(self):
+		return self.sql_lev
+
+	def set_sql_lev(self, sql_lev):
+		self.sql_lev = sql_lev
+		self.gr_simple_squelch_cc_0.set_threshold(self.sql_lev)
+
+	def get_rf_gain(self):
+		return self.rf_gain
+
+	def set_rf_gain(self, rf_gain):
+		self.rf_gain = rf_gain
+		self.fcd_source_c_1.set_lna_gain(self.rf_gain)
+
+	def get_pass_trans(self):
+		return self.pass_trans
+
+	def set_pass_trans(self, pass_trans):
+		self.pass_trans = pass_trans
+		self.band_pass_filter_0.set_taps(firdes.band_pass(1, self.samp_rate, self.pass_low, self.pass_high, self.pass_trans, firdes.WIN_HAMMING, 6.76))
+
+	def get_pass_low(self):
+		return self.pass_low
+
+	def set_pass_low(self, pass_low):
+		self.pass_low = pass_low
+		self.band_pass_filter_0.set_taps(firdes.band_pass(1, self.samp_rate, self.pass_low, self.pass_high, self.pass_trans, firdes.WIN_HAMMING, 6.76))
+
+	def get_pass_high(self):
+		return self.pass_high
+
+	def set_pass_high(self, pass_high):
+		self.pass_high = pass_high
+		self.band_pass_filter_0.set_taps(firdes.band_pass(1, self.samp_rate, self.pass_low, self.pass_high, self.pass_trans, firdes.WIN_HAMMING, 6.76))
+
+	def get_freq(self):
+		return self.freq
+
+	def set_freq(self, freq):
+		self.freq = freq
+		self.fcd_source_c_1.set_freq(self.freq)
+
+	def get_af_gain(self):
+		return self.af_gain
+
+	def set_af_gain(self, af_gain):
+		self.af_gain = af_gain
+		self.gr_multiply_const_vxx_0.set_k((self.af_gain, ))
+
+#data classes
 
 class fountain_pass:
     def __init__(self, sat, start_time, end_time, tca_el, details):
@@ -517,6 +731,36 @@ def open_serials():
 		print "if still not working reconnect the cables"
 		sys.exit()
 
+#data and initialization
+
+# satellite and frequency list
+sat_data = [
+	#{'name':'AO-7', 'freq':145977500, 'mode':'cw'},
+	{'name':'AO-7', 'freq':435106000, 'mode':'cw'},
+	{'name':'AO-27', 'freq':436795000, 'mode':'fm'},
+	{'name':'CO-55', 'freq':436837500, 'mode':'cw'},
+	{'name':'CO-58', 'freq':437425000, 'mode':'cw'},
+	{'name':'CO-57', 'freq':436847500, 'mode':'cw'},
+	{'name':'COMPASS-1', 'freq':435790000, 'mode':'cw'},
+        {'name':'HO-68', 'freq':437275000, 'mode':'cw'},
+        {'name':'VO-52', 'freq':145936000, 'mode':'cw'},
+        {'name':'SEEDS_II_(CO-66)', 'freq':437485000, 'mode':'cw'},
+        {'name':'DELFI-C3_(DO-64)', 'freq':145870000, 'mode':'cw'},
+	{'name':'SO-67', 'freq':435300000, 'mode':'fm'},
+	{'name':'UWE-2', 'freq':437385000, 'mode':'fm'},
+        {'name':'SO-50', 'freq':436795000, 'mode':'fm'},
+	{'name':'SWISSCUBE', 'freq':437505000, 'mode':'cw'},
+	{'name':'ITUPSAT_1', 'freq':437325000, 'mode':'cw'},
+	{'name':'BEESAT', 'freq':436000000, 'mode':'cw'},
+	{'name':'FO-29', 'freq':435795000, 'mode':'cw'},
+	{'name':'ISS', 'freq':145825000, 'mode':'cw'},
+	{'name':'PRISM', 'freq':437250000, 'mode':'cw'},
+	{'name':'AAU_CUBESAT', 'freq':437900000, 'mode':'cw'},
+	{'name':'STARS', 'freq':437305000, 'mode':'cw'},
+	{'name':'KKS-1', 'freq':437385000, 'mode':'cw'},
+	{'name':'CUTE-1.7+APD_II_(CO-65)', 'freq':437275000, 'mode':'cw'},
+]
+
 IS_JUST_A_TEST = False
 
 
@@ -524,11 +768,8 @@ arduino = oled = None
 
 oled_sat_pos = 0
 
-
-
 if IS_JUST_A_TEST is False: 	
 	open_serials()	
-
 
 index_pass = -1  
 current_pass = None
@@ -548,9 +789,7 @@ fountain_passes = []
 #the others 30deg spaced
 nozzles_azimuth = [23, 53,83, 113, 143, 173] 
 
-
-
-
+rx = None
 
 pins = [0,0,0,0,0,0]
 
@@ -583,6 +822,9 @@ try :
                 print " soon "
             elif (my_get_time() >= next_pass.start_time) and (my_get_time() < next_pass.end_time):
                 #next pass is NOW!
+
+		
+
                 last_time = next_pass.end_time
                 
                 details_now = None
@@ -591,11 +833,32 @@ try :
                         details_now = d
                     else:
                         break
+
+		if rx == None:                
+			# search data
+			for i in sat_data:
+				if i['name'] == next_pass.sat.name:
+					fr = i['freq']
+					mode = i['mode']
+			
+			# select rx mode
+			if mode == 'cw': # FIXME
+				rx = cw_rx()
+			if mode == 'fm':
+				rx = fm_rx()
+		
+			doppler = -(details_now.range_rate / 299792.4580) 
+			doppler = (doppler * fr)  # calculate real Doppler 
+			fr_rx = fr + (int(d/10)*10)
+			rx.set_freq(fr_rx)
+			rx.start()
+
+
+
+                print "now: az: %s el: %s" % ( details_now.az, details_now.el),
                 
-                print "now: az: %s el: %s" % ( d.az, d.el),
-                
-                n = find_best_nozzle(d.az)
-                a = find_servo_angle(d.el)
+                n = find_best_nozzle(details_now.az)
+                a = find_servo_angle(details_now.el)
                 
                 nozzle_solo(n)
                 move_nozzle(n,a)
@@ -605,6 +868,11 @@ try :
             else:
                 #no activity - go ahead and update the schedule
                 print "else"
+
+		if rx != None:
+			rx.stop()
+			rx = None
+
                 update_fountain_schedule()
 		update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()))
 
@@ -619,6 +887,13 @@ except KeyboardInterrupt :
     print "\nClosing OSCServer."
     print "Waiting for Server-thread to finish"
     closeOSC()
+    if arduino != None:
+        if arduino.isOpen(): 
+            arduino.close()
+    if oled != None:
+        if oled.isOpen(): 
+            oled.close()
+    
     print "Done"
         
 
