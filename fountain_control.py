@@ -342,7 +342,10 @@ def pass_handler(addr, tags, data, source):
 
     
     p = sat_pass(s, data[1],data[2], data[3], data[4], data[5], data[6], data[7])
-    sat_passes.append(p)
+
+    if not (find_sat_pass(s.name, data[1])):
+        sat_passes.append(p)
+
     index_pass = p
 
     #print "name %s, details %s %s %s %s", index_pass.sat.name, data[1], data[2], len(sat_passes)
@@ -376,8 +379,25 @@ def nothing_handler(addr, tags, data, source):
     if (1==0):
         print "-"
 
+def find_sat_pass(name, aos):
+	global sat_passes
+	for sat_pass in sat_passes:
+		if (sat_pass.sat.name == name) and (sat_pass.aos == aos):
+			return True
+	
+	return False
+
+
+def find_fountain_pass(sp):
+	global fountain_passes
+	for fountain_pass in fountain_passes:
+		if (fountain_pass.sat.name == sp.sat.name) and (sp.aos == fountain_pass.start_time):
+			return True
+	
+	return False
 
 def find_sat(name):
+    global sats
     for sat in sats:
         if (sat.name == name):
             return sat
@@ -453,28 +473,29 @@ def update_fountain_schedule():
     semaphore.release()
     #print "length "+str(len(sat_passes))
     for p in sp:
-        #laboral only:
-        #discard passes that begin AND end on the west side of the sky
-        if (p.aos_az < 180) or (p.eos_az < 180):   
-	    #print "doing the "+p.sat.name    
-            if fountain_passes == []:
-	        fp = filtered_details(p)
-	        fountain_passes.append(fp)
-            else:
-		#fp is the last pass to be added to the schedule
+	if not (find_fountain_pass(p)):
+		#laboral only:
+		#discard passes that begin AND end on the west side of the sky
+		if (p.aos_az < 180) or (p.eos_az < 180):   
+		    #print "doing the "+p.sat.name    
+		    if fountain_passes == []:
+			fp = filtered_details(p)
+			fountain_passes.append(fp)
+		    else:
+			#fp is the last pass to be added to the schedule
 
-		#now check against all previous passes if there's anything else at the same time
-		pass_ok = True
-		for cp in fountain_passes:
-		    #plus 5 seconds before and after - this will be the time to resettle the nozzles
-		    if ((p.aos >= cp.start_time-5) and (p.aos <= cp.end_time+5)) or ((p.eos>=cp.start_time-5) and (p.eos<=cp.end_time+5)):
-			pass_ok = False
-			break
+			#now check against all previous passes if there's anything else at the same time
+			pass_ok = True
+			for cp in fountain_passes:
+			    #plus 5 seconds before and after - this will be the time to resettle the nozzles
+			    if ((p.aos >= cp.start_time-5) and (p.aos <= cp.end_time+5)) or ((p.eos>=cp.start_time-5) and (p.eos<=cp.end_time+5)):
+				pass_ok = False
+				break
 
-		#so ok, no passes at the same time
-		if pass_ok == True:
-		    fp = filtered_details(p)
-		    fountain_passes.append(fp)
+			#so ok, no passes at the same time
+			if pass_ok == True:
+			    fp = filtered_details(p)
+			    fountain_passes.append(fp)
              
     fountain_passes.sort(key=lambda fountain_pass: fountain_pass.start_time)
     
@@ -795,6 +816,10 @@ sat_data = [
 	{'name':'AO-27', 'freq':436795000, 'mode':'fm'},
 	{'name':'CO-55', 'freq':436837500, 'mode':'cw'},
 	{'name':'CO-58', 'freq':437425000, 'mode':'cw'},
+	{'name':'NOAA_15', 'freq':137620000, 'mode':'fm'},
+	{'name':'NOAA_17', 'freq':137500000, 'mode':'fm'},
+	{'name':'NOAA_18', 'freq':137912500, 'mode':'fm'},
+	{'name':'NOAA_19', 'freq':137100000, 'mode':'fm'},
 	{'name':'CO-57', 'freq':436847500, 'mode':'cw'},
 	{'name':'COMPASS-1', 'freq':435790000, 'mode':'cw'},
         {'name':'HO-68', 'freq':437275000, 'mode':'cw'},
