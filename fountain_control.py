@@ -256,6 +256,37 @@ class cw_rx(gr.top_block):
 		self.af_gain = af_gain
 		self.gr_multiply_const_vxx_0.set_k((self.af_gain, ))
 
+
+class spawn_rx(threading.Thread):
+	# select rx mode
+	def __init__(self):  
+		threading.Thread.__init__(self)  
+		self.status = "stopped"
+
+
+	def start_rx(self, mode, freq):
+		self.mode = mode
+		self.freq = freq
+		
+		if mode == 'cw': 
+			self.rx = cw_rx()
+
+		if mode == 'fm':
+			self.rx = fm_rx()
+
+		self.rx.set_freq(self.freq)
+		self.rx.start()
+		self.status = "running"
+
+	def stop_rx(self):
+		self.rx.stop()
+		del self.rx
+		self.status = "stopped"
+
+	def set_freq(self, freq):
+		self.freq=freq
+		self.rx.set_freq(freq)
+
 #data classes
 
 class fountain_pass:
@@ -300,18 +331,8 @@ class pass_detail:
 
 # define a message-handler function for the server to call.
 def pass_handler(addr, tags, data, source):
-    global index_pass
-    """
-    print "received new osc msg from %s" % getUrlStr(source)
-    print "with addr : %s" % addr
-    print "typetags : %s" % tags
-    print "the actual data is :%s" % data
-    print "data :%s" % data[1]
-    #print "converted data :%s" % t
-    print "the time :%s" % time.ctime(data[1])
-    print "---"
+    global index_pass, sats, sat_passes
 
-        """
     s = find_sat(data[0]) 
     
     if (s == -1):
@@ -321,13 +342,20 @@ def pass_handler(addr, tags, data, source):
 
     
     p = sat_pass(s, data[1],data[2], data[3], data[4], data[5], data[6], data[7])
-    sat_passes.append(p)
+
+    if not (find_sat_pass(s.name, data[1])):
+        sat_passes.append(p)
+
     index_pass = p
 
+    #print "name %s, details %s %s %s %s", index_pass.sat.name, data[1], data[2], len(sat_passes)
+
 def start_passes_handler(addr, tags, data, source):
+    global sat_passes
+
     #don't let the update passes access pass data while we're updating it
     semaphore.acquire()
-    sat_passes = []
+    #sat_passes = []
 
 def done_passes_handler(addr, tags, data, source):
     #now it can access
@@ -343,14 +371,33 @@ def detail_handler(addr, tags, data, source):
         print "no pass? bug"
     else:
         index_pass.add_detail(d)
+
+    #print "name %s, details %s %s %s %s", index_pass.sat.name, data[0], data[1], data[2], data[3] / 100
    
 # define a message-handler function for the server to call.
 def nothing_handler(addr, tags, data, source):
     if (1==0):
         print "-"
 
+def find_sat_pass(name, aos):
+	global sat_passes
+	for sat_pass in sat_passes:
+		if (sat_pass.sat.name == name) and (sat_pass.aos == aos):
+			return True
+	
+	return False
+
+
+def find_fountain_pass(sp):
+	global fountain_passes
+	for fountain_pass in fountain_passes:
+		if (fountain_pass.sat.name == sp.sat.name) and (sp.aos == fountain_pass.start_time):
+			return True
+	
+	return False
 
 def find_sat(name):
+    global sats
     for sat in sats:
         if (sat.name == name):
             return sat
@@ -377,47 +424,78 @@ def print_schedule(fp):
         print "name: %s, start: %s, end: %s, elevation: %s" % (p.sat.name, time.ctime(p.start_time), time.ctime(p.end_time), p.tca_el)
 
 def print_next_pass():
+    global next_pass
     if next_pass == None:
         print "no data yet"
     else:
         print next_pass.sat.name
         for d in next_pass.details:
-            print " %s, az: %s, el: %s" % (get_str_time(d.time), d.az, d.el)
+            print " %s, az: %s, el: %s" %(get_str_time(d.time), d.az, d.el)
+
+def print_fountain_passes():
+	global fountain_passes
+	for fp in fountain_passes:
+		print fp.sat.name, fp.start_time, fp.end_time
+
+def filtered_details (p):
+	new_details = []
+	earliest = detail_end_time = 2000000000
+	latest = 0
+        #for nd in p.details:
+	for i in range(len(p.details)):
+            #laboral only:
+            #we don't want the event details that happen in the west part of the sky (> 180 deg azimuth)
+            #we don't want event details too close to the horizon (10 deg elevation minimun)
+            if (p.details[i].az < 180) and (p.details[i].el >= 10):
+                new_details.append(p.details[i])
+		if p.details[i].time < earliest:
+			earliest = p.details[i].time
+
+		if i == len(p.details) - 1:
+			detail_end_time = p.eos
+		else:
+			detail_end_time = p.details[i+1].time
+
+		if detail_end_time > latest:
+			latest = detail_end_time
+
+	        #print "appending "+p.sat.name+", az "+str(p.details[i].az)
+	    
+        fp = fountain_pass(p.sat, earliest, latest, p.tca_el, new_details)
+	return fp
 
 def update_fountain_schedule():
-    global next_pass
+    global next_pass, fountain_passes, sat_passes
+    fountain_passes = []
     semaphore.acquire()
+    #we sort by elevation, to start with the best passes
     sp = sorted(sat_passes, key=lambda sat_pass: sat_pass.tca_el, reverse=True)
     semaphore.release()
+    #print "length "+str(len(sat_passes))
     for p in sp:
-        #laboral only:
-        #discard passes that begin AND end on the west side of the sky
-        if (p.aos_az < 180) or (p.eos_az < 180):            
-            if fountain_passes == []:
-                fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, p.details)
-                fountain_passes.append(fp)
-            else:
-                #fp is the last pass to be added to the schedule
-                
-                #now check against all previous passes if there's anything else at the same time
-                pass_ok = True
-                for cp in fountain_passes:
-                    #plus 5 seconds before and after - this will be the time to resettle the nozzles
-                    if ((p.aos >= cp.start_time-5) and (p.aos <= cp.end_time+5)) or ((p.eos>=cp.start_time-5) and (p.eos<=cp.end_time+5)):
-                        pass_ok = False
-                        break
-                if pass_ok == True:
-                    
-                    new_details = []
-                    for nd in p.details:
-                        #laboral only:
-                        #we don't want the event details that happen in the west part of the sky (> 180 deg azimuth)
-                        #we don't want event details too close to the horizon (10 deg elevation minimun)
-                        if (nd.az < 180) and (nd.el >= 10):
-                            new_details.append(nd)
-                    
-                    fp = fountain_pass(p.sat, p.aos, p.eos, p.tca_el, new_details)
-                    fountain_passes.append(fp)
+	if not (find_fountain_pass(p)):
+		#laboral only:
+		#discard passes that begin AND end on the west side of the sky
+		if (p.aos_az < 180) or (p.eos_az < 180):   
+		    #print "doing the "+p.sat.name    
+		    if fountain_passes == []:
+			fp = filtered_details(p)
+			fountain_passes.append(fp)
+		    else:
+			#fp is the last pass to be added to the schedule
+
+			#now check against all previous passes if there's anything else at the same time
+			pass_ok = True
+			for cp in fountain_passes:
+			    #plus 5 seconds before and after - this will be the time to resettle the nozzles
+			    if ((p.aos >= cp.start_time-5) and (p.aos <= cp.end_time+5)) or ((p.eos>=cp.start_time-5) and (p.eos<=cp.end_time+5)):
+				pass_ok = False
+				break
+
+			#so ok, no passes at the same time
+			if pass_ok == True:
+			    fp = filtered_details(p)
+			    fountain_passes.append(fp)
              
     fountain_passes.sort(key=lambda fountain_pass: fountain_pass.start_time)
     
@@ -446,8 +524,10 @@ def find_servo_angle(a):
 def my_get_time():
     #for debug purposes
     return int(time.mktime(time.localtime()))
+    #return time.time() - time.timezone
 
 def get_str_time(t=my_get_time()): 
+    #print t, time.localtime(t)
     return time.strftime("%H:%M:%S", time.localtime(t))
 
 #string
@@ -474,22 +554,22 @@ def nozzle_solo(n):
     nnn = []
     for i in range(len(nozzles_azimuth)):
         if (i==n):
-            nnn.append(1)
+            nnn.append("1")
         else:
-            nnn.append(0)
+            nnn.append("0")
     if IS_JUST_A_TEST:
         print "nozzles state %s command %s" % nnn,
     else:
         for i in range(len(nnn)):
-            str = "d"+add_zeros_10(i)+nnn[i]+"\n"
-            arduino.write(str)
+            command = "d"+add_zeros_10(i)+nnn[i]+"\n"
+            arduino.write(command)
 
 def move_nozzle(n,a):
-    str = "s"+add_zeros_10(n)+add_zeros_100(a)+"\n"
+    command = "s"+add_zeros_10(n)+add_zeros_100(a)+"\n"
     if IS_JUST_A_TEST:
         print "angle %s command %s" % ( a)
     else:
-        arduino.write(str)
+        arduino.write(command)
 	pins[n] = a
 
 def go_slow(pin, angle, delta, interval):
@@ -538,7 +618,7 @@ def send_sgc_commands(commands):
 
 def sgc_print(x,y,font,color_1,color_2, w, h, text):
 	global arduino, oled
-	print "text= ", text
+	#print "text= ", text
 	oled.write("S")
 	oled.write(chr(x))
 	oled.write(chr(y))
@@ -555,52 +635,35 @@ def sgc_print(x,y,font,color_1,color_2, w, h, text):
 def draw_sat(x,y):
 	#print x,y
 	send_sgc_commands(["72",x,y,x+40,y+20,0,31]) #rectangle
-	print "ds rec 1"
+	#print "ds rec 1"
 	ack_or_reset()
 	send_sgc_commands(["4C",x+40,y+10,x+44,y+10,0,31]) #line
-	print "ds line 1"
+	#print "ds line 1"
 	ack_or_reset()
 	send_sgc_commands(["43",x+60,y+10,15,0,31]) #circle
-	print "ds circle"
+	#print "ds circle"
 	ack_or_reset()
 	send_sgc_commands(["4C",x+75,y+10,x+80,y+10,0,31]) #line
-	print "ds line 2"
+	#print "ds line 2"
 	ack_or_reset()
 	send_sgc_commands(["72",x+80,y,x+120,y+20,0,31]) #rectangle
-	print "ds rec 2"
+	#print "ds rec 2"
 	ack_or_reset()
 	
-def reset_or_die():
-	time.sleep(0.5)
-	print "trying to reset..."
-	oled.write("U")
-	ack=oled.read(1)
-	if len(ack)==0:
-		ack ="!"
-
-	tries = 0
-	while ord(ack)!=6:
-		time.sleep(0.5)
-		print "trying to reset..."
-		oled.write("U")
-		ack=oled.read(1)
-		if len(ack)==0:
-			ack ="!"
-		tries = tries + 1
-
-
-	oled.write("E")
-	ack=oled.read(1)
 
 
 def ack_or_reset():
-	global arduino, oled
+	global oled
 
 	ack=oled.read(1)
 	if (len(ack))==0:
 		print "time out exit"
+		oled.flushInput()
+		oled.flushOutput()
 		oled.write("U")
 		ack=oled.read(1)
+		if (len(ack))==0:
+			print "time out exit"
 		#sys.exit()
 		#reset_or_die()
 	elif ord(ack) != 6:
@@ -620,10 +683,10 @@ def update_oled (satname, timetext):
 	satname = satname[0:10] #clip if too long
 
 	send_sgc_commands(["70",01]) #no fill
-	print "no fill"
+	#print "no fill"
 	ack_or_reset()
 	send_sgc_commands(["72",00,00,159,12,255,255]) #rectangle
-	print "rect title"
+	#print "rect title"
 	ack_or_reset()
 	send_sgc_commands(["70",0]) # fill
 	ack_or_reset()
@@ -634,27 +697,27 @@ def update_oled (satname, timetext):
 
 	draw_sat(oled_sat_pos,26)
 	send_sgc_commands(["70",01]) #no fill
-	print "no fill"
+	#print "no fill"
 	ack_or_reset()
 	sgc_print(7,2,0,248,0,1,1,"ionic satellite fountain")
-	print "title"
+	#print "title"
 	ack_or_reset()
 	sgc_print(0,68,2,255,255,1,1,"next pass:")
-	print "next pass"
+	#print "next pass"
 	ack_or_reset()
 	sgc_print(0,83,2,255,255,2,2,satname)
-	print "sat name"
+	#print "sat name"
 	ack_or_reset()
 	if timetext == "now!":
 		if now_blink == True:
 			sgc_print(0,110,0,255,255,2,2,timetext)
 			now_blink = False
 		else:
-			now_blink == True
+			now_blink = True
 	else:
 		sgc_print(0,110,0,255,255,2,2,timetext)
 	
-	print "time"
+	#print "time"
 	#sgc_print(20,110,0,227,156,2,2,"in 2:10:10")
 	ack_or_reset()
 
@@ -666,24 +729,38 @@ def open_serials():
 	s1 = None
 	s2 = None
 
-	
-	try:
-		s1 = serial.Serial ("/dev/ttyUSB0",9600, timeout=1)
-	
-	except:
-		print "serial port /dev/ttyUSB0 not found"
+	i = 0
+	while (s1 == None) and (i<10):
+		try:
+			s1 = serial.Serial ("/dev/ttyUSB"+str(i),9600, timeout=1)
+			s1.open()
+		except:
+			print "serial port /dev/ttyUSB"+str(i)+" not found ",
+
+		
+		i = i + 1
+
+
+	while (s2 == None) and (i<10):
+		try:
+			s2 = serial.Serial ("/dev/ttyUSB"+str(i), 9600, timeout=1)
+			s2.open()
+		except:
+			print "serial port /dev/ttyUSB"+str(i)+" not found"
+		i = i + 1
+
+
+	if (s1 == None) or (s2==None):	
+		print "one or more devices not found"
 		sys.exit()
 
-	
-	try:
-		s2 = serial.Serial ("/dev/ttyUSB1", 9600, timeout=1)
-	
-	except:
-		print "serial port /dev/ttyUSB1 not found"
-		sys.exit()
+	s1.flushInput()
+	s1.flushOutput()
+	s2.flushInput()
+	s2.flushOutput()
 
-	s1.open()
-	s1.write("U")	
+	#s1.open()
+	s1.write("U")
 	ack = s1.read(1)
 	if len(ack) > 0:
 		if ack == "A":
@@ -697,39 +774,38 @@ def open_serials():
 			if ord(ack) != 6:
 				print "oled problem - bad ack", ack
 				sys.exit()
-			oled.timeout = None
 			oled.write("U") #set baud rate
 			ack_or_reset()
 			oled.write("E") #clear screen
 			ack_or_reset()
-			arduino.timeout = 0.1
-			print "arduino on USB0"
-			print "oled on USB1"
+			#print "arduino on USB0"
+			#print "oled on USB1"
 
 		elif ord(ack) == 6:
 			arduino = s2
 			oled = s1
-			arduino.timeout = 0.1
 			arduino.write("U")
 			ack = arduino.read(1)
 			if ack != "A":
-				print "arduino not connected"
+				print "arduino not connected "
 				sys.exit()
-			oled.timeout = 5
 			oled.write("U") #set baud rate
 			ack_or_reset()
 			oled.write("E") #clear screen
 			ack_or_reset()
-			print "arduino on USB1"
-			print "oled on USB0"
+			#print "arduino on USB1"
+			#print "oled on USB0"
 		else:
-			print "?"
+			print "device 1 not responding"
 
 	else:
 		print "something is wrong :-O "
 		print "try again in a few seconds "
 		print "if still not working reconnect the cables"
 		sys.exit()
+
+	print "arduino on "+arduino.port
+	print "oled on "+oled.port
 
 #data and initialization
 
@@ -740,18 +816,22 @@ sat_data = [
 	{'name':'AO-27', 'freq':436795000, 'mode':'fm'},
 	{'name':'CO-55', 'freq':436837500, 'mode':'cw'},
 	{'name':'CO-58', 'freq':437425000, 'mode':'cw'},
+	{'name':'NOAA_15', 'freq':137620000, 'mode':'fm'},
+	{'name':'NOAA_17', 'freq':137500000, 'mode':'fm'},
+	{'name':'NOAA_18', 'freq':137912500, 'mode':'fm'},
+	{'name':'NOAA_19', 'freq':137100000, 'mode':'fm'},
 	{'name':'CO-57', 'freq':436847500, 'mode':'cw'},
 	{'name':'COMPASS-1', 'freq':435790000, 'mode':'cw'},
         {'name':'HO-68', 'freq':437275000, 'mode':'cw'},
         {'name':'VO-52', 'freq':145936000, 'mode':'cw'},
         {'name':'SEEDS_II_(CO-66)', 'freq':437485000, 'mode':'cw'},
         {'name':'DELFI-C3_(DO-64)', 'freq':145870000, 'mode':'cw'},
-	{'name':'SO-67', 'freq':435300000, 'mode':'fm'},
-	{'name':'UWE-2', 'freq':437385000, 'mode':'fm'},
+	{'name':'SO-67', 'freq':435300000, 'mode':'fm'},#
+	{'name':'UWE-2', 'freq':437385000, 'mode':'fm'},#
         {'name':'SO-50', 'freq':436795000, 'mode':'fm'},
-	{'name':'SWISSCUBE', 'freq':437505000, 'mode':'cw'},
-	{'name':'ITUPSAT_1', 'freq':437325000, 'mode':'cw'},
-	{'name':'BEESAT', 'freq':436000000, 'mode':'cw'},
+	{'name':'SWISSCUBE', 'freq':437505000, 'mode':'cw'},#
+	{'name':'ITUPSAT_1', 'freq':437325000, 'mode':'cw'},#
+	{'name':'BEESAT', 'freq':436000000, 'mode':'cw'},#
 	{'name':'FO-29', 'freq':435795000, 'mode':'cw'},
 	{'name':'ISS', 'freq':145825000, 'mode':'cw'},
 	{'name':'PRISM', 'freq':437250000, 'mode':'cw'},
@@ -767,6 +847,7 @@ IS_JUST_A_TEST = False
 arduino = oled = None
 
 oled_sat_pos = 0
+now_blink = False
 
 if IS_JUST_A_TEST is False: 	
 	open_serials()	
@@ -803,9 +884,11 @@ setOSCHandler("/gpredict/pass/detail", detail_handler) # adding our function
 setOSCHandler("/gpredict/pass/start", start_passes_handler) # adding our function
 setOSCHandler("/gpredict/pass/done", done_passes_handler) # adding our function
 
+#reportOSCHandlers()
 
-# just checking which handlers we have added. not really needed
-reportOSCHandlers()
+#create gnuradio thread
+mu_rx = spawn_rx()
+mu_rx.start()
 
 
 
@@ -815,15 +898,18 @@ try :
         
         #check if we got info from gpredict yet
         if (next_pass != None) and (oled != None) and (arduino != None):
+
             print "n %s s: %s, e %s" % (get_str_time(my_get_time()), get_str_time(next_pass.start_time), get_str_time(next_pass.end_time)),
+
             if (my_get_time() >= next_pass.start_time - 5) and (my_get_time() < next_pass.start_time):
                 #next pass will be within 5 secs
                 #print "soon - next start: %s, next end %s" % (time.ctime(next_pass.start_time), time.ctime(next_pass.end_time))
+
                 print " soon "
+		update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()))
+
             elif (my_get_time() >= next_pass.start_time) and (my_get_time() < next_pass.end_time):
                 #next pass is NOW!
-
-		
 
                 last_time = next_pass.end_time
                 
@@ -831,32 +917,32 @@ try :
                 for d in next_pass.details:
                     if (my_get_time() >= d.time):
                         details_now = d
-                    else:
                         break
 
-		if rx == None:                
-			# search data
+		if mu_rx.status == "stopped":                
+			# search data to find frequency and mode
 			for i in sat_data:
 				if i['name'] == next_pass.sat.name:
 					fr = i['freq']
 					mode = i['mode']
 			
 			# select rx mode
-			if mode == 'cw': # FIXME
-				rx = cw_rx()
-			if mode == 'fm':
-				rx = fm_rx()
-		
+			
 			doppler = -(details_now.range_rate / 299792.4580) 
 			doppler = (doppler * fr)  # calculate real Doppler 
-			fr_rx = fr + (int(d/10)*10)
-			rx.set_freq(fr_rx)
-			rx.start()
+			fr_rx = fr + (int(doppler/10)*10)
+			mu_rx.start_rx(mode, fr_rx)
+		else:
+			doppler = -(details_now.range_rate / 299792.4580) 
+			doppler = (doppler * fr)  # calculate real Doppler 
 
+			fr_rx = fr + (int(doppler/10)*10)
+			mu_rx.set_freq(fr_rx)
+		
 
-
-                print "now: az: %s el: %s" % ( details_now.az, details_now.el),
+                print "now: az: %s el: %s time: %s range: %s" % ( details_now.az, details_now.el, str(details_now.time), str(details_now.range_rate)),
                 
+
                 n = find_best_nozzle(details_now.az)
                 a = find_servo_angle(details_now.el)
                 
@@ -869,21 +955,22 @@ try :
                 #no activity - go ahead and update the schedule
                 print "else"
 
-		if rx != None:
-			rx.stop()
-			rx = None
+		if mu_rx.status == "running":
+			mu_rx.stop_rx()
 
                 update_fountain_schedule()
-		update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()))
+		update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()-3600)) #strange 1-hour offset bug, hence the 3600
 
         #to check, press enter at the terminal
         if heard_enter():
             #print_passes(sat_passes)
             #update_fountain_schedule()
             print_schedule(fountain_passes)
+	    #print_fountain_passes()
             print_next_pass()
 
 except KeyboardInterrupt :
+    del mu_rx
     print "\nClosing OSCServer."
     print "Waiting for Server-thread to finish"
     closeOSC()
