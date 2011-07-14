@@ -40,15 +40,9 @@ void setup() {
   for (int i=2;i<14;i++)
     pinMode (i, OUTPUT);
 
+  attachAll();
 
-  myservo[0].attach(3, 620,2350);
-  myservo[1].attach(2, 620,2350);
-  myservo[2].attach(5, 620,2350);
-  myservo[3].attach(4, 620,2350);
-  myservo[4].attach(7, 620,2350);
-  myservo[5].attach(6, 620,2350);
-
-  Serial.begin(57600);
+  Serial.begin(9600);
 }
 
 void loop () {
@@ -60,13 +54,17 @@ void loop () {
 
   if (Serial.available()) {
     read_char = Serial.read();
-    Serial.println(read_char);
-    while(read_char != '\n') {
-      delay(5);
-      serialData += read_char;
-      read_char = Serial.read();
+    //Serial.println(read_char);
+    if (read_char == 85) { // "U"  char 85
+      Serial.print("A");
+    } else {
+      while(read_char != '\n') {
+        delay(5);
+        serialData += read_char;
+        read_char = Serial.read();
+      }
     }
-    Serial.println(serialData);
+    //Serial.println(serialData);
 
   }
 
@@ -87,15 +85,22 @@ void loop () {
     pin = atoi(pin_char);
     //Serial.println(pin);
 
-    serialData.substring(3,8).toCharArray(angle_char,5);
-    angle = atoi(angle_char);
-    //Serial.println(angle);
-    
-    if (pin % 2 == 0) 
-        angle = 90 - angle;
+    if (serialData.substring(3,8).startsWith("d")) {
+      detachAll();
+    } else if (serialData.substring(3,8).startsWith("a")) {
+      attachAll();
+    } else {
 
-    //myservo[pin].write(angle);
-    goSlow (pin, angle, 1, 30);
+      serialData.substring(3,8).toCharArray(angle_char,5);
+      angle = atoi(angle_char);
+      //Serial.println(angle);
+      
+      if (pin % 2 == 0) 
+          angle = 90 - angle;
+  
+      myservo[pin].write(angle);
+      //goSlow (pin, angle, 1, 30);
+    }
   }
 }
 
@@ -132,3 +137,20 @@ void goSlow (int pin, int angle, int delta, int interval) {
 
 }
 
+void attachAll() {
+  myservo[0].attach(3, 620,2350);
+  myservo[1].attach(2, 620,2350);
+  myservo[2].attach(5, 620,2350);
+  myservo[3].attach(4, 620,2350);
+  myservo[4].attach(7, 620,2350);
+  myservo[5].attach(6, 620,2350);  
+  for (int i=0; i<6; i++) {
+    myservo[i].write(0);
+  }
+}
+
+void detachAll() {
+  for (int i=0; i<6; i++) {
+    myservo[i].detach();
+  }
+}
