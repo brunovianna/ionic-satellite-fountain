@@ -40,7 +40,6 @@ arduino 13 - bomba 5
 
 
 from simpleOSC import *
-from datetime import datetime
 import time, sys, select, threading, serial, OSC, string
 
 from gnuradio import audio
@@ -71,7 +70,6 @@ class fm_rx(gr.top_block):
 		self.rf_gain = rf_gain = 20
 		self.freq = freq = 144800000
 		self.af_gain = af_gain = 2
-		self.sat_file_name = sat_file_name = "Undefined"
 
 		##################################################
 		# Blocks
@@ -92,15 +90,6 @@ class fm_rx(gr.top_block):
 		self.fcd_source_c_1.set_freq_corr(-32)
 		    
 		self.audio_sink = audio.sink(48000, "", True)
-		
-		self.wavfile_sink = gr.wavfile_sink(self.sat_file_name, 1, 11025, 16)
-		self.blks2_rational_resampler_xxx_0 = blks2.rational_resampler_fff(
-			interpolation=11025,
-			decimation=48000,
-			taps=None,
-			fractional_bw=None,
-		)
-		
 
 		##################################################
 		# Connections
@@ -112,8 +101,6 @@ class fm_rx(gr.top_block):
 		self.connect((self.gr_simple_squelch_cc_0, 0), (self.nbfm_normal, 0))
 		self.connect((self.nbfm_normal, 0), (self.gr_multiply_const_vxx_1, 0))
 		self.connect((self.fcd_source_c_1, 0), (self.xlating_fir_filter, 0))
-		self.connect((self.nbfm_normal, 0), (self.blks2_rational_resampler_xxx_0, 0))
-		self.connect((self.blks2_rational_resampler_xxx_0, 0), (self.wavfile_sink, 0))
 
 	def get_samp_rate(self):
 		return self.samp_rate
@@ -158,13 +145,6 @@ class fm_rx(gr.top_block):
 		self.af_gain = af_gain
 		self.gr_multiply_const_vxx_1.set_k((self.af_gain, ))
 
-	def set_file_name(self, file_name):
-		self.sat_file_name = file_name + datetime.now().strftime("%Y.%m.%d.%H.%M.%S") + ".wav"
-		print "recording to "+self.sat_file_name
-		self.wavfile_sink.close()
-		self.wavfile_sink.open(self.sat_file_name)
-		
-
 # cw / ssb receiver (just change bandpass filter values), created using gnuradio-companion
 class cw_rx(gr.top_block):
 
@@ -183,7 +163,6 @@ class cw_rx(gr.top_block):
 		self.pass_high = pass_high = 1200
 		self.freq = freq = 144800000
 		self.af_gain = af_gain = 5
-		self.sat_file_name = sat_file_name = "Undefined"
 
 		##################################################
 		# Blocks
@@ -201,14 +180,6 @@ class cw_rx(gr.top_block):
 			1, samp_rate, pass_low, pass_high, pass_trans, firdes.WIN_HAMMING, 6.76))
 		self.audio_sink = audio.sink(48000, "", True)
 
-		self.wavfile_sink = gr.wavfile_sink(self.sat_file_name, 1, 11025, 16)
-		self.blks2_rational_resampler_xxx_0 = blks2.rational_resampler_fff(
-			interpolation=11025,
-			decimation=48000,
-			taps=None,
-			fractional_bw=None,
-		)
-
 		##################################################
 		# Connections
 		##################################################
@@ -220,8 +191,6 @@ class cw_rx(gr.top_block):
 		self.connect((self.gr_simple_squelch_cc_0, 0), (self.band_pass_filter_0, 0))
 		self.connect((self.gr_multiply_const_vxx_0, 0), (self.audio_sink, 0))
 		self.connect((self.gr_multiply_const_vxx_0, 0), (self.audio_sink, 1))
-		self.connect((self.gr_complex_to_real_0, 0), (self.blks2_rational_resampler_xxx_0, 0))
-		self.connect((self.blks2_rational_resampler_xxx_0, 0), (self.wavfile_sink, 0))
 
 	def get_samp_rate(self):
 		return self.samp_rate
@@ -286,13 +255,6 @@ class cw_rx(gr.top_block):
 	def set_af_gain(self, af_gain):
 		self.af_gain = af_gain
 		self.gr_multiply_const_vxx_0.set_k((self.af_gain, ))
-		
-	def set_file_name(self, file_name):
-		self.sat_file_name = file_name + datetime.now().strftime("%Y.%m.%d.%H.%M.%S") + ".wav"
-		print "recording to "+self.sat_file_name
-		self.wavfile_sink.close()
-		self.wavfile_sink.open(self.sat_file_name)
-		
 
 
 class spawn_rx(threading.Thread):
@@ -302,10 +264,9 @@ class spawn_rx(threading.Thread):
 		self.status = "stopped"
 
 
-	def start_rx(self, mode, freq, sat_name):
+	def start_rx(self, mode, freq):
 		self.mode = mode
 		self.freq = freq
-		self.sat_file_name = sat_name
 		
 
 		if not IS_JUST_A_TEST:
@@ -316,7 +277,6 @@ class spawn_rx(threading.Thread):
 				self.rx = fm_rx()
 
 			self.rx.set_freq(self.freq)
-			self.rx.set_file_name(self.sat_file_name)
 			self.rx.start()
 		self.status = "running"
 
@@ -330,8 +290,6 @@ class spawn_rx(threading.Thread):
 		self.freq=freq
 		if not IS_JUST_A_TEST:
 			self.rx.set_freq(freq)
-			
-		
 
 #data classes
 
@@ -427,7 +385,7 @@ def done_passes_handler(addr, tags, data, source):
 
 def detail_handler(addr, tags, data, source):
 	global index_pass
-	d = pass_detail(data[0], data[1], data[2], data[3] / 100)
+	d = pass_detail(data[0], data[1], data[2], data[3])
 	if (index_pass == -1):
 		print "no pass? bug"
 	else:
@@ -694,10 +652,6 @@ def nozzle_solo(n):
 	#print command
 
 def move_nozzle(n,a):
-	#debido a que hemos remplazado el servo numero 2, los angulos son diferentes
-	if n == 1:
-		a = 90 - a
-		
 	command = "s"+add_zeros_10(n)+add_zeros_100(a)+"\n"
 	arduino.write(command)
 	pins[n] = a
@@ -734,12 +688,8 @@ def send_sgc_commands(commands):
 			if command < 0:
 				command = 0
 			if command > 255:
-				command = 255
-			try:			
-				oled.write(chr(command))
-			except:
-				print "write failed"
-				
+				command = 255			
+			oled.write(chr(command))
 	elif type(commands)==type(list()):
 		for command in commands:
 			if type(command)==type(str()):
@@ -748,32 +698,25 @@ def send_sgc_commands(commands):
 				command = 0
 			if command > 255:
 				command = 255			
-			try:
-				oled.write(chr(command))
-			except:
-				print "oled write failed"
+			oled.write(chr(command))
 
 def sgc_print(x,y,font,color_1,color_2, w, h, text):
 	global arduino, oled
 	#print "text= ", text
-	try:
-		oled.write("S")
-		oled.write(chr(x))
-		oled.write(chr(y))
-		oled.write(chr(font))
-		oled.write(chr(color_1))
-		oled.write(chr(color_2))
-		oled.write(chr(w))
-		oled.write(chr(h))
-		for c in text:
-			oled.write(c)
-		oled.write(chr(0))
-	except:
-		print "oled write failed"
+	oled.write("S")
+	oled.write(chr(x))
+	oled.write(chr(y))
+	oled.write(chr(font))
+	oled.write(chr(color_1))
+	oled.write(chr(color_2))
+	oled.write(chr(w))
+	oled.write(chr(h))
+	for c in text:
+		oled.write(c)
+	oled.write(chr(0))
+
 
 def draw_sat(x,y):
-	send_sgc_commands(["72",x-5,y-5,x+120,y+25,0,0])
-	ack_or_reset()
 	#print x,y
 	send_sgc_commands(["72",x,y,x+40,y+20,0,31]) #rectangle
 	#print "ds rec 1"
@@ -797,48 +740,29 @@ def ack_or_reset():
 	global oled
 
 	ack=oled.read(1)
-	try:
+	if (len(ack))==0:
+		print "time out exit"
+		oled.flushInput()
+		oled.flushOutput()
+		oled.write("U")
+		ack=oled.read(1)
 		if (len(ack))==0:
 			print "time out exit"
-			time.sleep(1)
-			oled.flushInput()
-			oled.flushOutput()
-			time.sleep(1)
-			oled.write("U")
-			ack=oled.read(1)
-			oled.write("E")
-			ack=oled.read(1)
-			if (len(ack))==0:
-				print "still time out exit"
-			#sys.exit()
-			#reset_or_die()
-		elif ord(ack) != 6:
-			print "bad ack exit"
-			time.sleep(1)
-			oled.flushInput()
-			oled.flushOutput()
-			time.sleep(1)
-			oled.write("U")
-			ack=oled.read(1)
-			oled.write("E")
-			ack=oled.read(1)
-			if (len(ack))==0:
-				print "still time out exit"
-			elif ord(ack) != 6:
-				print "still time out exit"
-			#sys.exit()		
-			#reset_or_die()
-	except:
-		print "oled write failed"
+		#sys.exit()
+		#reset_or_die()
+	elif ord(ack) != 6:
+		print "bad ack exit"
+		#sys.exit()		
+		#reset_or_die()
 		
 
 def update_oled (satname, timetext):
 
-	global oled_sat_pos, now_blink, last_satname
+	global oled_sat_pos, now_blink
 	global arduino, oled
 
-	#oled.write("E") #clear screen
-	#ack_or_reset()
+	oled.write("E") #clear screen
+	ack_or_reset()
 
 	satname = satname[0:10] #clip if too long
 
@@ -865,34 +789,17 @@ def update_oled (satname, timetext):
 	sgc_print(0,68,2,255,255,1,1,"next pass:")
 	#print "next pass"
 	ack_or_reset()
-	
-	send_sgc_commands(["70",0]) # fill
-	ack_or_reset()
-	
-
-	if last_satname == "":
-		last_satname = satname
-	elif last_satname != satname:
-		last_satname = satname
-		send_sgc_commands(["72",00,83,159,109,0,0]) #rectangle erase
-		ack_or_reset()
-
 	sgc_print(0,83,2,255,255,2,2,satname)
+	#print "sat name"
 	ack_or_reset()
-	
-	send_sgc_commands(["72",00,110,159,127,0,0]) #rectangle erase
-	ack_or_reset()
-	
-	#no more blinking
-	#if timetext == "now!":
-	#	if now_blink == True:
-	#		sgc_print(0,110,0,255,255,2,2,timetext)
-	#		now_blink = False
-	#	else:
-	#		now_blink = True
-	#else:
-	
-	sgc_print(0,110,0,255,255,2,2,timetext)
+	if timetext == "now!":
+		if now_blink == True:
+			sgc_print(0,110,0,255,255,2,2,timetext)
+			now_blink = False
+		else:
+			now_blink = True
+	else:
+		sgc_print(0,110,0,255,255,2,2,timetext)
 	
 	#print "time"
 	#sgc_print(20,110,0,227,156,2,2,"in 2:10:10")
@@ -991,7 +898,7 @@ sat_data = [
 	#{'name':'AO-7', 'freq':145977500, 'mode':'cw'},
 	{'name':"HO-68", 'freq':437275000, 'mode':'cw'},
 	{'name':'AO-7', 'freq':435106000, 'mode':'cw'},
-	{'name':'AO-27', 'freq':436795000, 'mode':'fm'}, 
+	{'name':'AO-27', 'freq':436795000, 'mode':'fm'},
 	{'name':'CO-55', 'freq':436837500, 'mode':'cw'},
 	{'name':'CO-58', 'freq':437425000, 'mode':'cw'},
 	{'name':'NOAA 15', 'freq':137620000, 'mode':'fm'},
@@ -1001,8 +908,8 @@ sat_data = [
 	{'name':'CO-57', 'freq':436847500, 'mode':'cw'},
 	{'name':'COMPASS-1', 'freq':435790000, 'mode':'cw'},
 	{'name':'VO-52', 'freq':145936000, 'mode':'cw'},
-	{'name':'SEEDS II (CO-66)', 'freq':437485000, 'mode':'cw'},
-	{'name':'DELFI-C3 (DO-64)', 'freq':145870000, 'mode':'cw'},
+	{'name':'SEEDS II', 'freq':437485000, 'mode':'cw'},
+	{'name':'DELFI-C3', 'freq':145870000, 'mode':'cw'},
 	{'name':'SO-67', 'freq':435300000, 'mode':'fm'},#
 	{'name':'UWE-2', 'freq':437385000, 'mode':'fm'},#
 	{'name':'SO-50', 'freq':436795000, 'mode':'fm'},
@@ -1015,19 +922,19 @@ sat_data = [
 	{'name':'AAU CUBESAT', 'freq':437900000, 'mode':'cw'},
 	{'name':'STARS', 'freq':437305000, 'mode':'cw'},
 	{'name':'KKS-1', 'freq':437385000, 'mode':'cw'},
-	{'name':'CUTE-1.7+APD II (CO-65)', 'freq':437275000, 'mode':'cw'},
+	{'name':'CUTE-1.7+APD II', 'freq':437275000, 'mode':'cw'},
 ]
 
 #sat_data[0]['name'] = "HOPE-1 (HO-68)"+chr(13)+chr(10) #it's coming from gpredict this way
 
 IS_JUST_A_TEST = False
 
-last_satname = ""
+pins = [0,0,0,0,0,0]
+
+
 
 arduino = oled = None
 
-oled_sat_pos = 0
-now_blink = False
 
 if IS_JUST_A_TEST is False: 	
 	open_serials()
@@ -1035,135 +942,86 @@ else:
 	arduino = fake_serial("arduino")
 	oled = fake_serial("oled")
 
-index_pass = -1  
-current_pass = None
-next_pass = None
-
-semaphore = threading.BoundedSemaphore()
-
-initOSCServer('127.0.0.1', 7771)
-
-
-sats = []
-sat_passes = []
-fountain_passes = []
 
 #laboral is inclined 8deg to true north
 #first nozzle at 15deg from building alignment, ie 23deg
 #the others 30deg spaced
 nozzles_azimuth = [23, 53,83, 113, 143, 173] 
 
-rx = None
 
-pins = [0,0,0,0,0,0]
+step = 10
 
-setOSCHandler("/gpredict/sats/all", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sat/", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sat/next", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sats/next", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sats", nothing_handler) # adding our function
-setOSCHandler("/gpredict/pass", pass_handler) # adding our function
-setOSCHandler("/gpredict/pass/detail", detail_handler) # adding our function
-setOSCHandler("/gpredict/pass/start", start_passes_handler) # adding our function
-setOSCHandler("/gpredict/pass/done", done_passes_handler) # adding our function
-
-#define recorded files prefix
-prefix = "/home/fuente/recordings/"
-#prefix = ""
-
-#create gnuradio thread
-mu_rx = spawn_rx()
-mu_rx.start()
 
 
 
 try :
-	while 1 :
-		time.sleep(1)
-		
-		#check if we got info from gpredict yet
-		if (next_pass != None) and (oled != None) and (arduino != None):
 
-			print "next pass: %s in %s" % (next_pass.sat.name, get_str_time(-my_get_time()+next_pass.start_time-3600))
+	time.sleep(12)
 
-			if (my_get_time() >= next_pass.start_time - 5) and (my_get_time() < next_pass.start_time):
-				#next pass will be within 5 secs
-				#print "soon - next start: %s, next end %s" % (time.ctime(next_pass.start_time), time.ctime(next_pass.end_time))
+	start_fountain()
+	# 0 s, n 1, angle 12
+	# 39 s, n 1, angle 16
+	# 40 s, n 1, angle 22
 
-				print " soon "
-				update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()-3600)) #strange 1-hour offset bug, hence the 3600
+	nozzle_solo(0)
+	move_nozzle(0,90-12)
+	time.sleep(step)
+	move_nozzle(0,90-16)
+	time.sleep(step)
+	move_nozzle(0,90-22)
+	time.sleep(step)
+	move_nozzle(0,90-30)
+	time.sleep(step)
+	move_nozzle(0,90-40)
+	time.sleep(step)
 
-			elif (my_get_time() >= next_pass.start_time) and (my_get_time() <= next_pass.end_time):
-				#next pass is NOW!
+	nozzle_solo(1)
+	move_nozzle(1,90-54)
+	time.sleep(step)
 
-				last_time = next_pass.end_time
-				
+	nozzle_solo(2)
+	move_nozzle(2,90-63)
+	time.sleep(step)
 
-				details_now = None
+	nozzle_solo(3)
+	move_nozzle(3,90-10)
+	time.sleep(step)
+	move_nozzle(3,90-16)
+	time.sleep(step)
+	move_nozzle(3,90-22)
+	time.sleep(step)
+	move_nozzle(3,90-30)
+	time.sleep(step)
+	move_nozzle(3,90-40)
+	time.sleep(step)
 
+	nozzle_solo(4)
+	move_nozzle(4,90-56)
+	time.sleep(step)
 
-				for j in range(len(next_pass.details)):
-					if j == len(next_pass.details) - 1:
-						detail_end_time = next_pass.end_time
-					else:
-						detail_end_time = next_pass.details[j+1].time
+	nozzle_solo(5)
+	move_nozzle(5,90-42)
+	time.sleep(step)
+	move_nozzle(5,90-31)
+	time.sleep(step)
+	move_nozzle(5,90-23)
+	time.sleep(step)
+	move_nozzle(5,90-17)
+	time.sleep(step)
 
-					if (my_get_time() >= next_pass.details[j].time)and(my_get_time()<=detail_end_time):
-						details_now = next_pass.details[j]
-						break
+	stop_fountain()
+	if arduino != None:
+		if arduino.isOpen(): 
+			arduino.close()
+	if oled != None:
+		if oled.isOpen(): 
+			oled.close()
 
-				if mu_rx.status == "stopped":
-				# search data to find frequency and mode
-					doppler = details_now.doppler * next_pass.sat.freq / 100000000 # calculate real Doppler (we get doppler @ 100MHz) 
-					fr_rx = next_pass.sat.freq + (int(doppler/10)*10)
-					mu_rx.start_rx(next_pass.sat.mode, fr_rx, prefix + next_pass.sat.name + "_")
-					
-					update_oled (next_pass.sat.name, "now!")
-					time.sleep(0.2)
-				
-					start_fountain()
-				else:
-					doppler = details_now.doppler * next_pass.sat.freq / 100000000 # calculate real Doppler (we get doppler @ 100MHz) 
-					fr_rx = next_pass.sat.freq + (int(doppler/10)*10)
-					mu_rx.set_freq(fr_rx)
+	print "Done"
 
-
-				n = find_best_nozzle(details_now.az)
-				a = find_servo_angle(details_now.el)
-
-				print "now: az: %s el: %s time: %s freq: %s nozzle: %s" % ( details_now.az, details_now.el, str(details_now.time), str(fr_rx),str(n)),
-				
-				nozzle_solo(n)
-				time.sleep(0.1)
-				move_nozzle(n,a)
-				time.sleep(0.2)
-				print ""
-
-			else:
-				#no activity - go ahead and update the schedule
-
-				if mu_rx.status == "running":
-					mu_rx.stop_rx()
-					stop_fountain()
-					time.sleep(1)
-				else:
-					update_fountain_schedule()
-					update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()-3600)) #strange 1-hour offset bug, hence the 3600
-
-		#to check, press enter at the terminal
-		if heard_enter():
-			#print_passes(sat_passes)
-			#update_fountain_schedule()
-			print_schedule(fountain_passes)
-			#print_fountain_passes()
-			print_next_pass()
 
 except KeyboardInterrupt :
-	del mu_rx
 	stop_fountain()
-	print "\nClosing OSCServer."
-	print "Waiting for Server-thread to finish"
-	closeOSC()
 	if arduino != None:
 		if arduino.isOpen(): 
 			arduino.close()

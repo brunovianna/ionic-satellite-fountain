@@ -41,7 +41,7 @@ arduino 13 - bomba 5
 
 from simpleOSC import *
 from datetime import datetime
-import time, sys, select, threading, serial, OSC, string
+import time, sys, select, threading, serial, OSC, string, random
 
 from gnuradio import audio
 from gnuradio import eng_notation
@@ -681,6 +681,14 @@ def add_zeros_10 (a):
 
 #nozzle controls
 
+def multi_nozzle(l):
+	for i in range(0,6):
+		if l.count(i) != 0:
+			command = "d"+add_zeros_10(i)+"1\n"
+		else:
+			command = "d"+add_zeros_10(i)+"0\n"
+		arduino.write(command)
+
 def nozzle_solo(n):
 	nnn = []
 	for i in range(len(nozzles_azimuth)):
@@ -986,43 +994,8 @@ def open_serials():
 
 #data and initialization
 
-# satellite and frequency list
-sat_data = [
-	#{'name':'AO-7', 'freq':145977500, 'mode':'cw'},
-	{'name':"HO-68", 'freq':437275000, 'mode':'cw'},
-	{'name':'AO-7', 'freq':435106000, 'mode':'cw'},
-	{'name':'AO-27', 'freq':436795000, 'mode':'fm'}, 
-	{'name':'CO-55', 'freq':436837500, 'mode':'cw'},
-	{'name':'CO-58', 'freq':437425000, 'mode':'cw'},
-	{'name':'NOAA 15', 'freq':137620000, 'mode':'fm'},
-	{'name':'NOAA 17', 'freq':137500000, 'mode':'fm'},
-	{'name':'NOAA 18', 'freq':137912500, 'mode':'fm'},
-	{'name':'NOAA 19', 'freq':137100000, 'mode':'fm'},
-	{'name':'CO-57', 'freq':436847500, 'mode':'cw'},
-	{'name':'COMPASS-1', 'freq':435790000, 'mode':'cw'},
-	{'name':'VO-52', 'freq':145936000, 'mode':'cw'},
-	{'name':'SEEDS II (CO-66)', 'freq':437485000, 'mode':'cw'},
-	{'name':'DELFI-C3 (DO-64)', 'freq':145870000, 'mode':'cw'},
-	{'name':'SO-67', 'freq':435300000, 'mode':'fm'},#
-	{'name':'UWE-2', 'freq':437385000, 'mode':'fm'},#
-	{'name':'SO-50', 'freq':436795000, 'mode':'fm'},
-	{'name':'SWISSCUBE', 'freq':437505000, 'mode':'cw'},#
-	{'name':'ITUPSAT 1', 'freq':437325000, 'mode':'cw'},#
-	{'name':'BEESAT', 'freq':436000000, 'mode':'cw'},#
-	{'name':'FO-29', 'freq':435795000, 'mode':'cw'},
-	{'name':'ISS', 'freq':145825000, 'mode':'cw'},
-	{'name':'PRISM', 'freq':437250000, 'mode':'cw'},
-	{'name':'AAU CUBESAT', 'freq':437900000, 'mode':'cw'},
-	{'name':'STARS', 'freq':437305000, 'mode':'cw'},
-	{'name':'KKS-1', 'freq':437385000, 'mode':'cw'},
-	{'name':'CUTE-1.7+APD II (CO-65)', 'freq':437275000, 'mode':'cw'},
-]
-
-#sat_data[0]['name'] = "HOPE-1 (HO-68)"+chr(13)+chr(10) #it's coming from gpredict this way
 
 IS_JUST_A_TEST = False
-
-last_satname = ""
 
 arduino = oled = None
 
@@ -1035,135 +1008,72 @@ else:
 	arduino = fake_serial("arduino")
 	oled = fake_serial("oled")
 
-index_pass = -1  
-current_pass = None
-next_pass = None
-
-semaphore = threading.BoundedSemaphore()
-
-initOSCServer('127.0.0.1', 7771)
-
-
-sats = []
-sat_passes = []
-fountain_passes = []
-
-#laboral is inclined 8deg to true north
-#first nozzle at 15deg from building alignment, ie 23deg
-#the others 30deg spaced
-nozzles_azimuth = [23, 53,83, 113, 143, 173] 
-
-rx = None
 
 pins = [0,0,0,0,0,0]
 
-setOSCHandler("/gpredict/sats/all", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sat/", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sat/next", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sats/next", nothing_handler) # adding our function
-setOSCHandler("/gpredict/sats", nothing_handler) # adding our function
-setOSCHandler("/gpredict/pass", pass_handler) # adding our function
-setOSCHandler("/gpredict/pass/detail", detail_handler) # adding our function
-setOSCHandler("/gpredict/pass/start", start_passes_handler) # adding our function
-setOSCHandler("/gpredict/pass/done", done_passes_handler) # adding our function
-
-#define recorded files prefix
-prefix = "/home/fuente/recordings/"
-#prefix = ""
-
-#create gnuradio thread
-mu_rx = spawn_rx()
-mu_rx.start()
-
-
+start_fountain()
 
 try :
-	while 1 :
-		time.sleep(1)
+	# basurillas jvr
+	while 1:
+		# 1 a 3 chorros simultaneos
+		chorros = random.randint(2, 4)
+		# listado de bombas total
+		bombas = [0,1,2,3,4,5]
+		# listado de bombas que se usan
+		bombas = random.sample(bombas, chorros)
 		
-		#check if we got info from gpredict yet
-		if (next_pass != None) and (oled != None) and (arduino != None):
-
-			print "next pass: %s in %s" % (next_pass.sat.name, get_str_time(-my_get_time()+next_pass.start_time-3600))
-
-			if (my_get_time() >= next_pass.start_time - 5) and (my_get_time() < next_pass.start_time):
-				#next pass will be within 5 secs
-				#print "soon - next start: %s, next end %s" % (time.ctime(next_pass.start_time), time.ctime(next_pass.end_time))
-
-				print " soon "
-				update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()-3600)) #strange 1-hour offset bug, hence the 3600
-
-			elif (my_get_time() >= next_pass.start_time) and (my_get_time() <= next_pass.end_time):
-				#next pass is NOW!
-
-				last_time = next_pass.end_time
+		print "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+		print "lista de bombas que usaremos: ", bombas  
+		
+		# tiempo que durara el ciclo de chorreo de 6 a 15 segundos
+		tiempo = random.randint(6,15)
+		# activamos array de bombas
+		multi_nozzle(bombas)
+		
+		#chorros pueden ser moviles o fijos
+		movimiento = []
+		for bomba in bombas:
+			movimiento.append(random.randint(0,1))
 				
-
-				details_now = None
-
-
-				for j in range(len(next_pass.details)):
-					if j == len(next_pass.details) - 1:
-						detail_end_time = next_pass.end_time
-					else:
-						detail_end_time = next_pass.details[j+1].time
-
-					if (my_get_time() >= next_pass.details[j].time)and(my_get_time()<=detail_end_time):
-						details_now = next_pass.details[j]
-						break
-
-				if mu_rx.status == "stopped":
-				# search data to find frequency and mode
-					doppler = details_now.doppler * next_pass.sat.freq / 100000000 # calculate real Doppler (we get doppler @ 100MHz) 
-					fr_rx = next_pass.sat.freq + (int(doppler/10)*10)
-					mu_rx.start_rx(next_pass.sat.mode, fr_rx, prefix + next_pass.sat.name + "_")
-					
-					update_oled (next_pass.sat.name, "now!")
-					time.sleep(0.2)
-				
-					start_fountain()
+		instante = 0
+		# movemos servos de las bombas durante el tiempo
+		while instante < tiempo:
+			mov = 0
+			for bomba in bombas:
+				if movimiento[mov] == 1:
+					print "movemos bomba: ",bomba, "instante ",instante, "de", tiempo
+					move_nozzle(bomba, random.randint(0,80))
 				else:
-					doppler = details_now.doppler * next_pass.sat.freq / 100000000 # calculate real Doppler (we get doppler @ 100MHz) 
-					fr_rx = next_pass.sat.freq + (int(doppler/10)*10)
-					mu_rx.set_freq(fr_rx)
-
-
-				n = find_best_nozzle(details_now.az)
-				a = find_servo_angle(details_now.el)
-
-				print "now: az: %s el: %s time: %s freq: %s nozzle: %s" % ( details_now.az, details_now.el, str(details_now.time), str(fr_rx),str(n)),
-				
-				nozzle_solo(n)
-				time.sleep(0.1)
-				move_nozzle(n,a)
-				time.sleep(0.2)
-				print ""
-
-			else:
-				#no activity - go ahead and update the schedule
-
-				if mu_rx.status == "running":
-					mu_rx.stop_rx()
-					stop_fountain()
-					time.sleep(1)
-				else:
-					update_fountain_schedule()
-					update_oled (next_pass.sat.name, "in "+get_str_time(next_pass.start_time-my_get_time()-3600)) #strange 1-hour offset bug, hence the 3600
-
-		#to check, press enter at the terminal
-		if heard_enter():
-			#print_passes(sat_passes)
-			#update_fountain_schedule()
-			print_schedule(fountain_passes)
-			#print_fountain_passes()
-			print_next_pass()
+					print "no movemos bomba: ",bomba, "instante ",instante, "de", tiempo
+				print " -------------- "
+				mov = mov + 1
+			instante= instante +1
+			time.sleep(1)
+	
+	
+	
+	
+	while 1==0 :
+		time.sleep(random.randint(6,15))
+		if random.random() > 0.7:
+			#movement
+			for i in range(random.randint(3,8)):
+				nozzle = random.randint(0,5)
+				go_slow(nozzle, random.randint(00,80), 2, 0.2)
+		else:
+			nozzle_list = []
+			for i in range(random.randint(0,4)):
+				nozzle = random.randint(0,5)
+				while nozzle_list.count(nozzle) != 0:
+					nozzle = random.randint(0,5)
+				nozzle_list.append(nozzle)
+			multi_nozzle(nozzle_list)
+			for nozzle in nozzle_list:
+				move_nozzle(nozzle, random.randint(0,80))
 
 except KeyboardInterrupt :
-	del mu_rx
 	stop_fountain()
-	print "\nClosing OSCServer."
-	print "Waiting for Server-thread to finish"
-	closeOSC()
 	if arduino != None:
 		if arduino.isOpen(): 
 			arduino.close()
